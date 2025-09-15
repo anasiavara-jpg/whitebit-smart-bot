@@ -5,6 +5,7 @@ import hmac
 import base64
 import hashlib
 import requests
+import sys
 from typing import Dict, Any, Optional
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -16,7 +17,8 @@ TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 WB_PUBLIC = "https://whitebit.com/api/v4/public"
 WB_PRIVATE = "https://whitebit.com/api/v4"
 
-AUTO_TRADING = True  # прапорець для автоторгівлі
+AUTO_TRADING = True
+RUNNING = True  # прапорець, який дозволяє зупинити цикл
 
 def log(msg: str):
     print(msg, flush=True)
@@ -64,12 +66,12 @@ def wb_balance(ticker: Optional[str] = None) -> Dict[str, str]:
     payload = {}
     if ticker:
         payload["ticker"] = ticker.upper()
-    data = wb_private_post("/api/v4/main-account/balance", payload)
+    data = wb_private_post("/main-account/balance", payload)
     return {k: v.get("main_balance", "0") for k, v in data.items() if float(v.get("main_balance", "0") or 0) > 0}
 
 def wb_order_market(market: str, side: str, amount: str) -> Dict[str, Any]:
     payload = {"market": market.upper(), "side": side.lower(), "amount": str(amount)}
-    return wb_private_post("/api/v4/order/market", payload)
+    return wb_private_post("/order/market", payload)
 
 def normalize_market(s: str) -> str:
     s = s.strip().upper()
@@ -84,42 +86,14 @@ HELP = (
     "/balance [тикер] — баланс (напр. /balance або /balance USDT)\n"
     "/buy <ринок> <сума_в_quote> — ринкова покупка (напр. /buy BTC_USDT 5)\n"
     "/sell <ринок> <кількість_base> — ринковий продаж (напр. /sell BTC_USDT 0.001)\n"
-    "/stop — зупиняє автоматичну торгівлю\n\n"
+    "/stop — зупиняє бота\n"
+    "/restart — перезапускає бота (експериментально)\n\n"
     "⚠️ Торгівля: "
     + ("УВІМКНЕНА" if TRADING_ENABLED else "ВИМКНЕНА (додай TRADING_ENABLED=true у Environment).")
 )
 
-prices = []  # для обчислення SMA
-
-def auto_trade(chat_id: int, market="BTC_USDT", period=5):
-    global prices, AUTO_TRADING
-    try:
-        price = wb_price(market)
-        if price is None:
-            return
-        prices.append(price)
-        if len(prices) > period:
-            prices.pop(0)
-        sma = sum(prices) / len(prices)
-        decision = None
-        if price > sma:
-            decision = "sell"
-        elif price < sma:
-            decision = "buy"
-        if decision:
-            msg = f"[AUTO] Ціна: {price}, SMA: {sma:.2f}, сигнал: {decision.upper()}"
-            tg_send(chat_id, msg)
-            if TRADING_ENABLED:
-                try:
-                    res = wb_order_market(market, decision, "0.001")
-                    tg_send(chat_id, f"Ордер виконано: {res}")
-                except Exception as e:
-                    tg_send(chat_id, f"Помилка автоторгівлі: {e}")
-    except Exception as e:
-        log(f"[auto_trade] {e}")
-
 def run_bot():
-    global AUTO_TRADING
+    global AUTO_TRADING, RUNNING
     if not BOT_TOKEN:
         log("BOT_TOKEN відсутній.")
         return
@@ -127,9 +101,7 @@ def run_bot():
         log("API ключі WhiteBIT не знайдені.")
     offset = None
     log("Bot is up. Waiting for updates...")
-    last_auto = 0
-    main_chat_id = None
-    while True:
+    while RUNNING:
         try:
             resp = requests.get(f"{TG_API}/getUpdates", params={"timeout": 50, "offset": offset}, timeout=80)
             resp.raise_for_status()
@@ -140,7 +112,6 @@ def run_bot():
                 if not msg or "text" not in msg:
                     continue
                 chat_id = msg["chat"]["id"]
-                main_chat_id = chat_id
                 text = msg["text"].strip()
                 parts = text.split()
                 cmd = parts[0].lower()
@@ -148,8 +119,12 @@ def run_bot():
                 if cmd in ("/start", "/help"):
                     tg_send(chat_id, HELP)
                 elif cmd == "/stop":
-                    AUTO_TRADING = False
-                    tg_send(chat_id, "Автоматична торгівля зупинена.")
+                    RUNNING = False
+                    tg_send(chat_id, "⏹ Бот зупинений. Перезапусти сервіс у Render або надішли /restart.")
+                    sys.exit(0)
+                elif cmd == "/restart":
+                    tg_send(chat_id, "🔄 Перезапуск бота...")
+                    os.execv(sys.executable, ["python"] + sys.argv)
                 elif cmd == "/price":
                     if len(parts) < 2:
                         tg_send(chat_id, "Приклад: /price BTC_USDT")
@@ -188,12 +163,6 @@ def run_bot():
                         tg_send(chat_id, f"Помилка ордера: {e}")
                 else:
                     tg_send(chat_id, "Невідома команда. Напиши /help")
-
-            # авто-торгівля
-            if AUTO_TRADING and main_chat_id and (time.time() - last_auto > 60):
-                auto_trade(main_chat_id)
-                last_auto = time.time()
-
         except Exception as e:
             log(f"[loop] {e}")
             time.sleep(3)
