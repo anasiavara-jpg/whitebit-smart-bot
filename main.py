@@ -16,6 +16,8 @@ TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 WB_PUBLIC = "https://whitebit.com/api/v4/public"
 WB_PRIVATE = "https://whitebit.com/api/v4"
 
+AUTO_TRADING = True  # прапорець для автоторгівлі
+
 def log(msg: str):
     print(msg, flush=True)
 
@@ -81,19 +83,52 @@ HELP = (
     "/price <ринок> — ціна (напр. /price BTC_USDT)\n"
     "/balance [тикер] — баланс (напр. /balance або /balance USDT)\n"
     "/buy <ринок> <сума_в_quote> — ринкова покупка (напр. /buy BTC_USDT 5)\n"
-    "/sell <ринок> <кількість_base> — ринковий продаж (напр. /sell BTC_USDT 0.001)\n\n"
+    "/sell <ринок> <кількість_base> — ринковий продаж (напр. /sell BTC_USDT 0.001)\n"
+    "/stop — зупиняє автоматичну торгівлю\n\n"
     "⚠️ Торгівля: "
     + ("УВІМКНЕНА" if TRADING_ENABLED else "ВИМКНЕНА (додай TRADING_ENABLED=true у Environment).")
 )
 
+prices = []  # для обчислення SMA
+
+def auto_trade(chat_id: int, market="BTC_USDT", period=5):
+    global prices, AUTO_TRADING
+    try:
+        price = wb_price(market)
+        if price is None:
+            return
+        prices.append(price)
+        if len(prices) > period:
+            prices.pop(0)
+        sma = sum(prices) / len(prices)
+        decision = None
+        if price > sma:
+            decision = "sell"
+        elif price < sma:
+            decision = "buy"
+        if decision:
+            msg = f"[AUTO] Ціна: {price}, SMA: {sma:.2f}, сигнал: {decision.upper()}"
+            tg_send(chat_id, msg)
+            if TRADING_ENABLED:
+                try:
+                    res = wb_order_market(market, decision, "0.001")
+                    tg_send(chat_id, f"Ордер виконано: {res}")
+                except Exception as e:
+                    tg_send(chat_id, f"Помилка автоторгівлі: {e}")
+    except Exception as e:
+        log(f"[auto_trade] {e}")
+
 def run_bot():
+    global AUTO_TRADING
     if not BOT_TOKEN:
         log("BOT_TOKEN відсутній.")
         return
     if not API_PUBLIC or not API_SECRET:
-        log("API ключі WhiteBIT не знайдені. Переконайся, що API_PUBLIC_KEY та API_SECRET_KEY додані.")
+        log("API ключі WhiteBIT не знайдені.")
     offset = None
     log("Bot is up. Waiting for updates...")
+    last_auto = 0
+    main_chat_id = None
     while True:
         try:
             resp = requests.get(f"{TG_API}/getUpdates", params={"timeout": 50, "offset": offset}, timeout=80)
@@ -105,12 +140,16 @@ def run_bot():
                 if not msg or "text" not in msg:
                     continue
                 chat_id = msg["chat"]["id"]
+                main_chat_id = chat_id
                 text = msg["text"].strip()
                 parts = text.split()
                 cmd = parts[0].lower()
 
                 if cmd in ("/start", "/help"):
                     tg_send(chat_id, HELP)
+                elif cmd == "/stop":
+                    AUTO_TRADING = False
+                    tg_send(chat_id, "Автоматична торгівля зупинена.")
                 elif cmd == "/price":
                     if len(parts) < 2:
                         tg_send(chat_id, "Приклад: /price BTC_USDT")
@@ -137,18 +176,24 @@ def run_bot():
                         tg_send(chat_id, f"Приклад: {cmd} BTC_USDT 5")
                         continue
                     if not TRADING_ENABLED:
-                        tg_send(chat_id, "Торгівля вимкнена. Додай TRADING_ENABLED=true і перезапусти.")
+                        tg_send(chat_id, "Торгівля вимкнена.")
                         continue
                     market = normalize_market(parts[1])
                     amount = parts[2]
                     side = "buy" if cmd == "/buy" else "sell"
                     try:
                         res = wb_order_market(market, side, amount)
-                        tg_send(chat_id, f"Ордер {side} {market} OK.\nID: {res.get('orderId')}\nСтатус: {res.get('status')}")
+                        tg_send(chat_id, f"Ордер {side} {market} OK. ID: {res.get('orderId')}")
                     except Exception as e:
                         tg_send(chat_id, f"Помилка ордера: {e}")
                 else:
                     tg_send(chat_id, "Невідома команда. Напиши /help")
+
+            # авто-торгівля
+            if AUTO_TRADING and main_chat_id and (time.time() - last_auto > 60):
+                auto_trade(main_chat_id)
+                last_auto = time.time()
+
         except Exception as e:
             log(f"[loop] {e}")
             time.sleep(3)
