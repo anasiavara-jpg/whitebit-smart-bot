@@ -32,6 +32,14 @@ def tg_send(chat_id: int, text: str):
     except Exception as e:
         log(f"[tg_send] {e}")
 
+def clear_webhook():
+    try:
+        r = requests.get(f"{TG_API}/deleteWebhook", timeout=10)
+        if r.status_code == 200:
+            log("[INIT] Webhook cleared")
+    except Exception as e:
+        log(f"[INIT] Failed to clear webhook: {e}")
+
 def make_signature_payload(path: str, data: Optional[Dict[str, Any]] = None):
     if data is None:
         data = {}
@@ -51,9 +59,8 @@ def wb_private_post(path: str, data: Optional[Dict[str, Any]] = None) -> Dict[st
         "X-TXC-PAYLOAD": payload_b64,
         "X-TXC-SIGNATURE": signature,
     }
-    url = f"{WB_PRIVATE}{path}"
-    r = requests.post(url, data=body_json, headers=headers, timeout=30)
-    log(f"[WB POST] {path} -> {r.status_code} {r.text[:200]}")
+    r = requests.post(f"{WB_PRIVATE}{path}", data=body_json, headers=headers, timeout=30)
+    log(f"[WB POST] {path} -> {r.status_code} {r.text[:150]}")
     r.raise_for_status()
     return r.json() if r.text else {}
 
@@ -89,7 +96,7 @@ def auto_trade(chat_id: int):
                 action = "sell"
             else:
                 continue
-            tg_send(chat_id, f"[AUTO] {market}: {price:.2f} ({change:+.2f}%), дія: {action.upper()} на {TRADE_AMOUNT} USDT")
+            tg_send(chat_id, f"[AUTO] {market}: {price:.2f} ({change:+.2f}%), дія: {action.upper()} {TRADE_AMOUNT} USDT")
             if REAL_TRADING:
                 try:
                     res = wb_order_market(market, action, TRADE_AMOUNT)
@@ -100,18 +107,18 @@ def auto_trade(chat_id: int):
             log(f"[auto_trade] {e}")
 
 HELP = (
-    "🤖 Бот WhiteBIT готовий!\n\n"
-    "/price <ринок> — поточна ціна\n"
+    "🤖 Бот WhiteBIT запущений!\n\n"
+    "/price <ринок> — ціна\n"
     "/market <пара> — додати пару\n"
     "/remove <пара> — видалити пару\n"
-    "/markets — показати всі пари\n"
+    "/markets — поточні пари\n"
     "/amount <число> — встановити суму (USDT)\n"
-    "/amounts — показати поточну суму\n"
-    "/auto on|off — увімк/вимк автоторгівлю\n"
-    "/trade on|off — увімк/вимк реальні угоди\n"
-    "/trade — статус реальної торгівлі\n"
-    "/stop — зупинити бота\n"
-    "/restart — перезапустити бота"
+    "/amounts — показати суму\n"
+    "/autotrade on|off — автоторгівля\n"
+    "/trade on|off — реальні угоди\n"
+    "/status — показати всі налаштування\n"
+    "/stop — зупинка бота\n"
+    "/restart — перезапуск бота"
 )
 
 def run_bot():
@@ -119,6 +126,7 @@ def run_bot():
     if not BOT_TOKEN:
         log("BOT_TOKEN відсутній.")
         return
+    clear_webhook()
     log("Bot is up. Waiting for updates...")
     offset = None
     last_auto = 0
@@ -156,17 +164,13 @@ def run_bot():
                     except Exception as e:
                         tg_send(chat_id, f"Помилка: {e}")
                 elif cmd == "/market":
-                    if len(parts) < 2:
-                        tg_send(chat_id, "Приклад: /market BTC_USDT")
-                    else:
+                    if len(parts) >= 2:
                         m = normalize_market(parts[1])
                         if m not in MARKETS:
                             MARKETS.append(m)
                         tg_send(chat_id, f"✅ Додано {m}. Поточні: {', '.join(MARKETS)}")
                 elif cmd == "/remove":
-                    if len(parts) < 2:
-                        tg_send(chat_id, "Приклад: /remove BTC_USDT")
-                    else:
+                    if len(parts) >= 2:
                         m = normalize_market(parts[1])
                         if m in MARKETS:
                             MARKETS.remove(m)
@@ -176,9 +180,7 @@ def run_bot():
                 elif cmd == "/markets":
                     tg_send(chat_id, f"📊 Параметри: {', '.join(MARKETS)}")
                 elif cmd == "/amount":
-                    if len(parts) < 2:
-                        tg_send(chat_id, "Приклад: /amount 5")
-                    else:
+                    if len(parts) >= 2:
                         try:
                             TRADE_AMOUNT = float(parts[1])
                             tg_send(chat_id, f"✅ Нова сума: {TRADE_AMOUNT} USDT")
@@ -186,24 +188,19 @@ def run_bot():
                             tg_send(chat_id, "Помилка: введи число")
                 elif cmd == "/amounts":
                     tg_send(chat_id, f"Поточна сума: {TRADE_AMOUNT} USDT")
-                elif cmd == "/auto":
-                    if len(parts) < 2:
-                        tg_send(chat_id, f"Автоторгівля: {'УВІМКНЕНА' if AUTO_TRADING else 'ВИМКНЕНА'}")
-                    else:
-                        AUTO_TRADING = parts[1].lower() == "on"
-                        tg_send(chat_id, f"Автоторгівля {'увімкнена' if AUTO_TRADING else 'вимкнена'}.")
+                elif cmd == "/autotrade":
+                    AUTO_TRADING = parts[1].lower() == "on" if len(parts) >= 2 else AUTO_TRADING
+                    tg_send(chat_id, f"Автоторгівля {'увімкнена' if AUTO_TRADING else 'вимкнена'}.")
                 elif cmd == "/trade":
-                    if len(parts) < 2:
-                        tg_send(chat_id, f"Реальна торгівля: {'УВІМКНЕНА' if REAL_TRADING else 'ВИМКНЕНА'}")
-                    else:
+                    if len(parts) >= 2:
                         REAL_TRADING = parts[1].lower() == "on"
-                        tg_send(chat_id, f"Реальна торгівля {'увімкнена' if REAL_TRADING else 'вимкнена'}.")
+                    tg_send(chat_id, f"Реальна торгівля {'увімкнена' if REAL_TRADING else 'вимкнена'}.")
+                elif cmd == "/status":
+                    tg_send(chat_id, f"📋 Параметри:\nПари: {', '.join(MARKETS)}\nСума: {TRADE_AMOUNT} USDT\nАвтоторгівля: {'ON' if AUTO_TRADING else 'OFF'}\nРеальна торгівля: {'ON' if REAL_TRADING else 'OFF'}")
 
-            # автоторгівля кожні 60 сек
             if AUTO_TRADING and main_chat_id and (time.time() - last_auto > 60):
                 auto_trade(main_chat_id)
                 last_auto = time.time()
-
         except Exception as e:
             log(f"[loop] {e}")
             time.sleep(3)
