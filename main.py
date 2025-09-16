@@ -1,3 +1,39 @@
+
+import aiohttp
+
+async def check_bot_instance(application=None):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe") as resp:
+                data = await resp.json()
+                if not data.get("ok"):
+                    logging.error("[INSTANCE] Невірний токен або бот не активний.")
+                    if application:
+                        await application.bot.send_message(chat_id=CHAT_ID, text="❌ Запуск скасовано: невірний токен.")
+                    return False
+                return True
+    except Exception as e:
+        logging.error(f"[INSTANCE] Помилка перевірки інстансу: {e}")
+        return True  # не блокуємо запуск у випадку помилки перевірки
+
+# Оновлений restart
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global AUTO_TRADE
+    await update.message.reply_text("♻️ Перезапуск бота...")
+    if not await check_bot_instance(context.application):
+        await update.message.reply_text("⚠️ Інший інстанс бота вже працює, запуск скасовано.")
+        return
+    AUTO_TRADE = False
+    AUTO_TRADE = True
+    await update.message.reply_text("✅ Бот успішно перезапущений. Автоторгівля УВІМКНЕНА.")
+
+# Виклик перевірки перед стартом
+async def safe_start(app):
+    if not await check_bot_instance(app):
+        logging.warning("[INSTANCE] Запуск скасовано: інший бот уже працює.")
+        return False
+    return True
+
 import os
 import json
 import time
