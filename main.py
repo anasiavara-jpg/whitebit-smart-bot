@@ -32,13 +32,16 @@ def tg_send(chat_id: int, text: str):
     except Exception as e:
         log(f"[tg_send] {e}")
 
-def clear_webhook():
+def clear_webhook_and_offset():
     try:
         r = requests.get(f"{TG_API}/deleteWebhook", timeout=10)
         if r.status_code == 200:
             log("[INIT] Webhook cleared")
+        # скидання offset
+        requests.get(f"{TG_API}/getUpdates", params={"offset": -1}, timeout=10)
+        log("[INIT] Offset reset")
     except Exception as e:
-        log(f"[INIT] Failed to clear webhook: {e}")
+        log(f"[INIT] Failed to clear webhook/offset: {e}")
 
 def make_signature_payload(path: str, data: Optional[Dict[str, Any]] = None):
     if data is None:
@@ -107,18 +110,18 @@ def auto_trade(chat_id: int):
             log(f"[auto_trade] {e}")
 
 HELP = (
-    "🤖 Бот WhiteBIT запущений!\n\n"
+    "🤖 Бот WhiteBIT готовий!\n\n"
     "/price <ринок> — ціна\n"
     "/market <пара> — додати пару\n"
     "/remove <пара> — видалити пару\n"
-    "/markets — поточні пари\n"
+    "/markets — активні пари\n"
     "/amount <число> — встановити суму (USDT)\n"
-    "/amounts — показати суму\n"
+    "/amounts — поточна сума\n"
     "/autotrade on|off — автоторгівля\n"
     "/trade on|off — реальні угоди\n"
-    "/status — показати всі налаштування\n"
+    "/status — показати налаштування\n"
     "/stop — зупинка бота\n"
-    "/restart — перезапуск бота"
+    "/restart — перезапуск"
 )
 
 def run_bot():
@@ -126,7 +129,7 @@ def run_bot():
     if not BOT_TOKEN:
         log("BOT_TOKEN відсутній.")
         return
-    clear_webhook()
+    clear_webhook_and_offset()
     log("Bot is up. Waiting for updates...")
     offset = None
     last_auto = 0
