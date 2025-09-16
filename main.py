@@ -1,116 +1,127 @@
 import os
-import logging
-import json
-import requests
 import time
-from telegram import Update, Bot
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import logging
+import requests
+import telebot
 
-# Logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# === CONFIG ===
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+WHITEBIT_API_KEY = os.getenv("WHITEBIT_API_KEY", "YOUR_WHITEBIT_API_KEY")
+WHITEBIT_API_SECRET = os.getenv("WHITEBIT_API_SECRET", "YOUR_WHITEBIT_API_SECRET")
 
-# Telegram Bot Token
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-WHITEBIT_API_KEY = os.getenv("WHITEBIT_API_KEY")
-WHITEBIT_API_SECRET = os.getenv("WHITEBIT_API_SECRET")
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=TELEGRAM_TOKEN)
+# === GLOBAL STATE ===
+markets = []
+default_amounts = {}
+auto_trading = False
+tp_percent = 1.0
+sl_percent = 1.0
 
-# --- WhiteBIT API helpers ---
-BASE_URL = "https://whitebit.com/api/v4"
-
-
-def get_price(symbol):
+def get_balance():
+    url = "https://whitebit.com/api/v4/main-account/balance"
+    headers = {"X-TXC-APIKEY": WHITEBIT_API_KEY}
     try:
-        response = requests.get(f"{BASE_URL}/public/ticker?market={symbol}")
-        data = response.json()
-        return float(data["result"][symbol]["last"])
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        return r.json()
     except Exception as e:
-        logger.error(f"Error fetching price: {e}")
-        return None
+        logging.error(f"Balance error: {e}")
+        return {"error": str(e)}
 
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    bot.reply_to(message, "Привіт! Я бот для WhiteBIT.
+"
+                          "Команди:
+"
+                          "/price <ринок>
+"
+                          "/balance [тікер]
+"
+                          "/buy <ринок> [сума]
+"
+                          "/sell <ринок> [сума]
+"
+                          "/setamount <ринок> <сума>
+"
+                          "/settp <відсоток>
+"
+                          "/setsl <відсоток>
+"
+                          "/market <ринок>
+"
+                          "/auto on|off
+"
+                          "/status
+"
+                          "/stop")
 
-def get_balance(asset=None):
-    try:
-        headers = {"Content-Type": "application/json", "X-TXC-APIKEY": WHITEBIT_API_KEY}
-        response = requests.post(f"{BASE_URL}/main-account/balance", headers=headers)
-        if response.status_code != 200:
-            return None, f"Помилка балансу: {response.status_code}"
-        data = response.json()
-        if asset:
-            return data.get(asset, {"available": 0}), None
-        return data, None
-    except Exception as e:
-        return None, str(e)
+@bot.message_handler(commands=['status'])
+def status(message):
+    text = f"📊 Статус:
+"
+    text += f"Ринки: {', '.join(markets) if markets else 'не задано'}
+"
+    text += f"TP: {tp_percent}%, SL: {sl_percent}%
+"
+    text += f"Автоторгівля: {'УВІМКНЕНА' if auto_trading else 'ВИМКНЕНА'}"
+    bot.reply_to(message, text)
 
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Привіт! Я бот для WhiteBIT.
-
-"
-        "Команди:
-"
-        "/price <ринок> — ціна (наприклад /price BTC_USDT)
-"
-        "/balance [тикер] — баланс (наприклад /balance або /balance USDT)
-"
-        "/buy <ринок> [сума] — ринкова покупка
-"
-        "/sell <ринок> [сума] — ринковий продаж
-"
-        "/setamount <ринок> <сума> — встановити дефолтну суму
-"
-        "/stop — зупинити бота
-"
-        "/restart — перезапустити бота
-"
-        "/auto on|off — увімкнути або вимкнути автоторгівлю
-"
-        "/settp <відсоток> — встановити take-profit
-"
-        "/setsl <відсоток> — встановити stop-loss"
-    )
-
-
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) == 0:
-        await update.message.reply_text("Вкажи ринок, наприклад: /price BTC_USDT")
+@bot.message_handler(commands=['market'])
+def add_market(message):
+    global markets
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Приклад: /market BTC_USDT")
         return
-    symbol = context.args[0].upper()
-    price = get_price(symbol)
-    if price:
-        await update.message.reply_text(f"{symbol}: {price}")
-    else:
-        await update.message.reply_text("Не вдалося отримати ціну.")
+    market = parts[1].upper()
+    if market not in markets:
+        markets.append(market)
+    bot.reply_to(message, f"✅ Додано {market}. Поточні: {', '.join(markets)}")
 
+@bot.message_handler(commands=['settp'])
+def set_tp(message):
+    global tp_percent
+    try:
+        tp_percent = float(message.text.split()[1])
+        bot.reply_to(message, f"✅ TP встановлено: {tp_percent}%")
+    except:
+        bot.reply_to(message, "Вкажи число у відсотках.")
 
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    asset = context.args[0].upper() if context.args else None
-    data, err = get_balance(asset)
-    if err:
-        await update.message.reply_text(f"Помилка: {err}")
-    else:
-        await update.message.reply_text(json.dumps(data, indent=2, ensure_ascii=False))
+@bot.message_handler(commands=['setsl'])
+def set_sl(message):
+    global sl_percent
+    try:
+        sl_percent = float(message.text.split()[1])
+        bot.reply_to(message, f"✅ SL встановлено: {sl_percent}%")
+    except:
+        bot.reply_to(message, "Вкажи число у відсотках.")
 
+@bot.message_handler(commands=['auto'])
+def auto(message):
+    global auto_trading
+    if "on" in message.text:
+        auto_trading = True
+        bot.reply_to(message, "Автоторгівля увімкнена.")
+    elif "off" in message.text:
+        auto_trading = False
+        bot.reply_to(message, "Автоторгівля вимкнена.")
 
-async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏹️ Бот зупинений. Перезапусти сервіс на Render або /restart.")
+@bot.message_handler(commands=['stop'])
+def stop_bot(message):
+    global auto_trading
+    auto_trading = False
+    bot.reply_to(message, "⏹ Бот зупинений.")
 
-
-# Main function
-def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("price", price))
-    app.add_handler(CommandHandler("balance", balance))
-    app.add_handler(CommandHandler("stop", stop))
-    app.run_polling()
-
+def auto_loop():
+    while True:
+        if auto_trading and markets:
+            logging.info("Auto-trading check...")
+            # тут буде логіка перевірки і виставлення ордерів
+        time.sleep(10)
 
 if __name__ == "__main__":
-    main()
+    logging.info("Бот запущено.")
+    bot.polling(none_stop=True)
