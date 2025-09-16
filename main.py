@@ -179,6 +179,156 @@ def main():
     loop.create_task(auto_trade_loop(app))
     app.run_polling()
 
+
+# -------------------- ADDED PATCH (non-destructive) --------------------
+VALID_QUOTE_ASSETS = {"USDT", "USDC", "BTC", "ETH"}
+CHAT_ID = None
+
+def is_valid_market(m: str) -> bool:
+    if not isinstance(m, str) or "_" not in m:
+        return False
+    base, quote = m.split("_", 1)
+    return bool(base) and quote in VALID_QUOTE_ASSETS
+
+async def removemarket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    m = (context.args[0] if context.args else "").upper()
+    if not m:
+        await update.message.reply_text("Приклад: /removemarket BTC_USDT")
+        return
+    removed = False
+    if m in MARKETS:
+        MARKETS.pop(m, None)
+        removed = True
+    DEFAULT_AMOUNT.pop(m, None)
+    TP.pop(m, None)
+    SL.pop(m, None)
+    await update.message.reply_text(("🗑 Видалено " + m) if removed else ("⚠️ " + m + " не знайдено"))
+
+# override status to show only valid items
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CHAT_ID
+    CHAT_ID = update.message.chat_id
+    keys = set([k for k in MARKETS.keys() if is_valid_market(k)])
+    keys |= set([k for k in DEFAULT_AMOUNT.keys() if is_valid_market(k)])
+    keys |= set([k for k in TP.keys() if is_valid_market(k)])
+    keys |= set([k for k in SL.keys() if is_valid_market(k)])
+    if not keys:
+        await update.message.reply_text("Поки що немає валідних ринків.")
+        return
+    lines = []
+    for m in sorted(keys):
+        lines.append(f"{m}: TP={TP.get(m,'-')} SL={SL.get(m,'-')} Amt={DEFAULT_AMOUNT.get(m,'-')}")
+    await update.message.reply_text("Статус:\n" + "\n".join(lines))
+
+# hourly report with last prices
+async def hourly_report(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = context.job.chat_id if getattr(context, "job", None) else CHAT_ID
+    if not chat_id:
+        return
+    try:
+        text_lines = ["⏰ Щогодинний звіт:"]
+        for m in sorted([k for k in MARKETS.keys() if is_valid_market(k)]):
+            try:
+                price = get_price(m)
+            except Exception:
+                price = None
+            text_lines.append(f"{m}: TP={TP.get(m,'-')} SL={SL.get(m,'-')} Amt={DEFAULT_AMOUNT.get(m,'-')} Price={price}")
+        await context.bot.send_message(chat_id=chat_id, text="\n".join(text_lines))
+    except Exception as e:
+        logging.error(f"[hourly_report] {e}")
+
+# make /start actually arm the loop
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CHAT_ID, AUTO_TRADE
+    CHAT_ID = update.message.chat_id
+    AUTO_TRADE = True
+    await update.message.reply_text("✅ Бот запущено. Автоторгівля УВІМКНЕНА.")
+
+# add a restart command
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global AUTO_TRADE
+    AUTO_TRADE = False
+    await update.message.reply_text("♻️ Перезапуск...")
+    AUTO_TRADE = True
+    await update.message.reply_text("✅ Перезапуск виконано. Автоторгівля УВІМКНЕНА.")
+
+# robust auto loop override: skip invalid/incomplete markets
+async def auto_trade_loop(app):
+    global LAST_PRICE
+    while True:
+        if AUTO_TRADE:
+            for m in list(MARKETS.keys()):
+                if not is_valid_market(m):
+                    continue
+                tp = TP.get(m)
+                sl = SL.get(m)
+                amt = DEFAULT_AMOUNT.get(m)
+                if tp is None or sl is None or amt is None:
+                    continue
+                try:
+                    price = get_price(m)
+                    if price is None:
+                        continue
+                    if m not in LAST_PRICE:
+                        LAST_PRICE[m] = price
+                        continue
+                    # buy trigger: -1% від референсної
+                    if price <= LAST_PRICE[m] * 0.99:
+                        res = create_order(m, "buy", amt)
+                        try:
+                            if CHAT_ID:
+                                await app.bot.send_message(chat_id=CHAT_ID, text=f"✅ Купив {amt} {m} @ {price}")
+                        except Exception as ee:
+                            logging.error(f"[notify buy] {ee}")
+                        LAST_PRICE[m] = price
+                    # TP
+                    if tp and price >= LAST_PRICE[m] * (1 + tp/100):
+                        res = create_order(m, "sell", amt)
+                        try:
+                            if CHAT_ID:
+                                await app.bot.send_message(chat_id=CHAT_ID, text=f"💰 TP SELL {amt} {m} @ {price}")
+                        except Exception as ee:
+                            logging.error(f"[notify tp] {ee}")
+                        LAST_PRICE[m] = price
+                    # SL
+                    if sl and price <= LAST_PRICE[m] * (1 - sl/100):
+                        res = create_order(m, "sell", amt)
+                        try:
+                            if CHAT_ID:
+                                await app.bot.send_message(chat_id=CHAT_ID, text=f"❌ SL SELL {amt} {m} @ {price}")
+                        except Exception as ee:
+                            logging.error(f"[notify sl] {ee}")
+                        LAST_PRICE[m] = price
+                except Exception as e:
+                    logging.error(f"[AUTO LOOP] {m}: {e}")
+        await asyncio.sleep(10)
+
+# override main to add new handlers and schedule hourly report
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("price", price))
+    app.add_handler(CommandHandler("market", market))
+    app.add_handler(CommandHandler("removemarket", removemarket))
+    app.add_handler(CommandHandler("setamount", setamount))
+    app.add_handler(CommandHandler("settp", settp))
+    app.add_handler(CommandHandler("setsl", setsl))
+    app.add_handler(CommandHandler("auto", auto))
+    app.add_handler(CommandHandler("buy", buy))
+    app.add_handler(CommandHandler("sell", sell))
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("stop", stop))
+
+    try:
+        app.job_queue.run_repeating(hourly_report, interval=3600, first=3600)
+    except Exception as e:
+        logging.error(f"[job_queue] {e}")
+
+    loop = asyncio.get_event_loop()
+    loop.create_task(auto_trade_loop(app))
+    app.run_polling()
+# ------------------ END PATCH ------------------
 if __name__ == "__main__":
     try:
         main()
