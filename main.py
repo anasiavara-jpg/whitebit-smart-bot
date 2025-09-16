@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 import asyncio
 import requests
@@ -6,16 +7,18 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Завантаження .env
+# Завантаження змінних середовища
 load_dotenv()
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("TELEGRAM_TOKEN не знайдений у .env файлі")
+    raise ValueError("BOT_TOKEN не знайдений у змінних середовища")
 
 # Логування
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 
-# Глобальні змінні
 AUTO_TRADE = False
 MARKETS = []
 DEFAULT_AMOUNT = {}
@@ -48,7 +51,7 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     market = context.args[0]
     try:
-        response = requests.get(f"https://whitebit.com/api/v4/public/ticker?market={market}")
+        response = requests.get(f"https://whitebit.com/api/v4/public/ticker?market={market}", timeout=10)
         data = response.json()
         if market in data:
             price_value = data[market]["last_price"]
@@ -121,9 +124,8 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Перезапуск бота...")
     await context.application.stop()
-    os.execv(__file__, ["python"] + sys.argv)
+    os.execv(sys.executable, ["python"] + sys.argv)
 
-# Запуск бота
 def main():
     app = Application.builder().token(TOKEN).build()
 
