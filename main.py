@@ -1,3 +1,4 @@
+
 import os
 import time
 import json
@@ -5,23 +6,18 @@ import hmac
 import base64
 import hashlib
 import requests
-import sys
 from typing import Dict, Any, Optional
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-API_PUBLIC = (os.getenv("API_PUBLIC_KEY") or "").strip()
-API_SECRET = (os.getenv("API_SECRET_KEY") or "").strip()
+API_PUBLIC = (os.getenv("API_PUBLIC_KEY") or os.getenv("API_PUBLIC") or os.getenv("WB_PUBLIC_KEY") or os.getenv("API_KEY") or "").strip()
+API_SECRET = (os.getenv("API_SECRET_KEY") or os.getenv("API_SECRET") or os.getenv("WB_SECRET_KEY") or "").strip()
+TRADING_ENABLED = (os.getenv("TRADING_ENABLED", "false").lower() in ["1", "true", "yes"])
 
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 WB_PUBLIC = "https://whitebit.com/api/v4/public"
 WB_PRIVATE = "https://whitebit.com/api/v4"
 
-RUNNING = True
-AUTO_TRADING = False
-REAL_TRADING = False
-TRADE_AMOUNT = 1.0
-MARKETS = ["BTC_USDT"]
-LAST_PRICES = {}
+user_trade_settings = {}  # chat_id -> {market: amount}
 
 def log(msg: str):
     print(msg, flush=True)
@@ -32,30 +28,19 @@ def tg_send(chat_id: int, text: str):
     except Exception as e:
         log(f"[tg_send] {e}")
 
-def clear_webhook_and_offset():
-    try:
-        r = requests.get(f"{TG_API}/deleteWebhook", timeout=10)
-        if r.status_code == 200:
-            log("[INIT] Webhook cleared")
-        # скидання offset
-        requests.get(f"{TG_API}/getUpdates", params={"offset": -1}, timeout=10)
-        log("[INIT] Offset reset")
-    except Exception as e:
-        log(f"[INIT] Failed to clear webhook/offset: {e}")
-
 def make_signature_payload(path: str, data: Optional[Dict[str, Any]] = None):
     if data is None:
         data = {}
-    body = dict(data)
-    body["request"] = path
-    body["nonce"] = str(int(time.time() * 1000))
-    body_json = json.dumps(body, separators=(",", ":"))
+    data = dict(data)
+    data["request"] = path
+    data["nonce"] = str(int(time.time() * 1000))
+    body_json = json.dumps(data, separators=(",", ":"))
     payload_b64 = base64.b64encode(body_json.encode()).decode()
     signature = hmac.new(API_SECRET.encode(), body_json.encode(), hashlib.sha512).hexdigest()
-    return body_json, payload_b64, signature
+    return body_json, payload_b64, signature, path
 
 def wb_private_post(path: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    body_json, payload_b64, signature = make_signature_payload(path, data)
+    body_json, payload_b64, signature, _ = make_signature_payload(path, data)
     headers = {
         "Content-Type": "application/json",
         "X-TXC-APIKEY": API_PUBLIC,
@@ -63,7 +48,7 @@ def wb_private_post(path: str, data: Optional[Dict[str, Any]] = None) -> Dict[st
         "X-TXC-SIGNATURE": signature,
     }
     r = requests.post(f"{WB_PRIVATE}{path}", data=body_json, headers=headers, timeout=30)
-    log(f"[WB POST] {path} -> {r.status_code} {r.text[:150]}")
+    log(f"[WB POST] {path} -> {r.status_code} {r.text[:500]}")
     r.raise_for_status()
     return r.json() if r.text else {}
 
@@ -72,68 +57,49 @@ def wb_price(market: str) -> Optional[float]:
     r.raise_for_status()
     data = r.json()
     info = data.get(market.upper())
-    return float(info.get("last_price")) if info else None
+    if not info:
+        return None
+    return float(info["last_price"])
 
-def wb_order_market(market: str, side: str, amount: float) -> Dict[str, Any]:
+def wb_balance(ticker: Optional[str] = None) -> Dict[str, str]:
+    payload = {}
+    data = wb_private_post("/main-account/balance", payload)
+    if ticker:
+        return {ticker: data.get(ticker, {}).get("main_balance", "0")}
+    return {k: v.get("main_balance", "0") for k, v in data.items()}
+
+def wb_order_market(market: str, side: str, amount: str) -> Dict[str, Any]:
     payload = {"market": market.upper(), "side": side.lower(), "amount": str(amount)}
     return wb_private_post("/order/market", payload)
 
 def normalize_market(s: str) -> str:
-    return s.strip().upper() if "_" in s else f"{s.upper()}_USDT"
-
-def auto_trade(chat_id: int):
-    global LAST_PRICES
-    for market in MARKETS:
-        try:
-            price = wb_price(market)
-            if price is None:
-                continue
-            last_price = LAST_PRICES.get(market)
-            LAST_PRICES[market] = price
-            if not last_price:
-                continue
-            change = (price - last_price) / last_price * 100
-            if change <= -1:
-                action = "buy"
-            elif change >= 1:
-                action = "sell"
-            else:
-                continue
-            tg_send(chat_id, f"[AUTO] {market}: {price:.2f} ({change:+.2f}%), дія: {action.upper()} {TRADE_AMOUNT} USDT")
-            if REAL_TRADING:
-                try:
-                    res = wb_order_market(market, action, TRADE_AMOUNT)
-                    tg_send(chat_id, f"✅ Ордер виконано: {res}")
-                except Exception as e:
-                    tg_send(chat_id, f"❌ Помилка ордера: {e}")
-        except Exception as e:
-            log(f"[auto_trade] {e}")
+    s = s.strip().upper()
+    if "_" in s:
+        return s
+    return f"{s}_USDT"
 
 HELP = (
-    "🤖 Бот WhiteBIT готовий!\n\n"
-    "/price <ринок> — ціна\n"
-    "/market <пара> — додати пару\n"
-    "/remove <пара> — видалити пару\n"
-    "/markets — активні пари\n"
-    "/amount <число> — встановити суму (USDT)\n"
-    "/amounts — поточна сума\n"
-    "/autotrade on|off — автоторгівля\n"
-    "/trade on|off — реальні угоди\n"
-    "/status — показати налаштування\n"
-    "/stop — зупинка бота\n"
-    "/restart — перезапуск"
+    "Привіт! Я бот для WhiteBIT.\n\n"
+    "Команди:\n"
+    "/price <ринок> — ціна (напр. /price BTC_USDT)\n"
+    "/balance [тикер] — баланс (напр. /balance або /balance USDT)\n"
+    "/buy <ринок> [сума] — ринкова покупка (або без суми — використає збережену)\n"
+    "/sell <ринок> [кількість] — ринковий продаж (або без суми — використає збережену)\n"
+    "/setamount <ринок> <сума> — встановити дефолтну суму для ринку\n"
+    "/stop — зупинити бота\n"
+    "/restart — перезапустити бота\n\n"
+    "⚠️ Торгівля: " + ("УВІМКНЕНА" if TRADING_ENABLED else "ВИМКНЕНА (додай TRADING_ENABLED=true у Environment).")
 )
 
+RUNNING = True
+
 def run_bot():
-    global RUNNING, AUTO_TRADING, REAL_TRADING, TRADE_AMOUNT, MARKETS
+    global RUNNING
     if not BOT_TOKEN:
         log("BOT_TOKEN відсутній.")
         return
-    clear_webhook_and_offset()
-    log("Bot is up. Waiting for updates...")
     offset = None
-    last_auto = 0
-    main_chat_id = None
+    log("Bot is up. Waiting for updates...")
     while RUNNING:
         try:
             resp = requests.get(f"{TG_API}/getUpdates", params={"timeout": 50, "offset": offset}, timeout=80)
@@ -141,69 +107,77 @@ def run_bot():
             updates = resp.json().get("result", [])
             for u in updates:
                 offset = max(offset or 0, u["update_id"] + 1)
-                msg = u.get("message")
+                msg = u.get("message") or u.get("edited_message")
                 if not msg or "text" not in msg:
                     continue
                 chat_id = msg["chat"]["id"]
-                main_chat_id = chat_id
                 text = msg["text"].strip()
                 parts = text.split()
                 cmd = parts[0].lower()
 
                 if cmd in ("/start", "/help"):
                     tg_send(chat_id, HELP)
+
                 elif cmd == "/stop":
-                    tg_send(chat_id, "⏹ Бот зупинено.")
+                    tg_send(chat_id, "⏹ Бот зупинений.")
                     RUNNING = False
-                    sys.exit(0)
+                    return
+
                 elif cmd == "/restart":
-                    tg_send(chat_id, "🔄 Перезапуск...")
-                    os.execv(sys.executable, ["python"] + sys.argv)
+                    tg_send(chat_id, "🔄 Перезапусти сервіс у Render або деплой заново.")
+                
+                elif cmd == "/setamount":
+                    if len(parts) < 3:
+                        tg_send(chat_id, "Приклад: /setamount BTC_USDT 10")
+                        continue
+                    market = normalize_market(parts[1])
+                    amount = parts[2]
+                    user_trade_settings.setdefault(chat_id, {})[market] = amount
+                    tg_send(chat_id, f"✅ Сума для {market} встановлена: {amount}")
+
                 elif cmd == "/price":
-                    market = normalize_market(parts[1]) if len(parts) > 1 else MARKETS[0]
+                    if len(parts) < 2:
+                        tg_send(chat_id, "Приклад: /price BTC_USDT")
+                        continue
+                    market = normalize_market(parts[1])
                     try:
                         p = wb_price(market)
                         tg_send(chat_id, f"{market}: {p}" if p else f"Ринок {market} не знайдено.")
                     except Exception as e:
-                        tg_send(chat_id, f"Помилка: {e}")
-                elif cmd == "/market":
-                    if len(parts) >= 2:
-                        m = normalize_market(parts[1])
-                        if m not in MARKETS:
-                            MARKETS.append(m)
-                        tg_send(chat_id, f"✅ Додано {m}. Поточні: {', '.join(MARKETS)}")
-                elif cmd == "/remove":
-                    if len(parts) >= 2:
-                        m = normalize_market(parts[1])
-                        if m in MARKETS:
-                            MARKETS.remove(m)
-                            tg_send(chat_id, f"❌ Видалено {m}. Поточні: {', '.join(MARKETS)}")
-                        else:
-                            tg_send(chat_id, f"{m} не знайдено у списку.")
-                elif cmd == "/markets":
-                    tg_send(chat_id, f"📊 Параметри: {', '.join(MARKETS)}")
-                elif cmd == "/amount":
-                    if len(parts) >= 2:
-                        try:
-                            TRADE_AMOUNT = float(parts[1])
-                            tg_send(chat_id, f"✅ Нова сума: {TRADE_AMOUNT} USDT")
-                        except:
-                            tg_send(chat_id, "Помилка: введи число")
-                elif cmd == "/amounts":
-                    tg_send(chat_id, f"Поточна сума: {TRADE_AMOUNT} USDT")
-                elif cmd == "/autotrade":
-                    AUTO_TRADING = parts[1].lower() == "on" if len(parts) >= 2 else AUTO_TRADING
-                    tg_send(chat_id, f"Автоторгівля {'увімкнена' if AUTO_TRADING else 'вимкнена'}.")
-                elif cmd == "/trade":
-                    if len(parts) >= 2:
-                        REAL_TRADING = parts[1].lower() == "on"
-                    tg_send(chat_id, f"Реальна торгівля {'увімкнена' if REAL_TRADING else 'вимкнена'}.")
-                elif cmd == "/status":
-                    tg_send(chat_id, f"📋 Параметри:\nПари: {', '.join(MARKETS)}\nСума: {TRADE_AMOUNT} USDT\nАвтоторгівля: {'ON' if AUTO_TRADING else 'OFF'}\nРеальна торгівля: {'ON' if REAL_TRADING else 'OFF'}")
+                        tg_send(chat_id, f"Помилка ціни: {e}")
 
-            if AUTO_TRADING and main_chat_id and (time.time() - last_auto > 60):
-                auto_trade(main_chat_id)
-                last_auto = time.time()
+                elif cmd == "/balance":
+                    ticker = parts[1] if len(parts) > 1 else None
+                    try:
+                        bals = wb_balance(ticker)
+                        if not bals:
+                            tg_send(chat_id, "Баланс порожній або 0.")
+                        else:
+                            lines = [f"{k}: {v}" for k, v in bals.items()]
+                            tg_send(chat_id, "Баланс:\n" + "\n".join(lines))
+                    except Exception as e:
+                        tg_send(chat_id, f"Помилка балансу: {e}")
+
+                elif cmd in ("/buy", "/sell"):
+                    if len(parts) < 2:
+                        tg_send(chat_id, f"Приклад: {cmd} BTC_USDT [сума]")
+                        continue
+                    if not TRADING_ENABLED:
+                        tg_send(chat_id, "Торгівля вимкнена. Додай TRADING_ENABLED=true і перезапусти.")
+                        continue
+                    market = normalize_market(parts[1])
+                    amount = parts[2] if len(parts) > 2 else user_trade_settings.get(chat_id, {}).get(market)
+                    if not amount:
+                        tg_send(chat_id, f"Спершу задай суму: /setamount {market} <сума>")
+                        continue
+                    side = "buy" if cmd == "/buy" else "sell"
+                    try:
+                        res = wb_order_market(market, side, amount)
+                        tg_send(chat_id, f"Ордер {side} {market} OK.\nID: {res.get('orderId')}\nСтатус: {res.get('status')}")
+                    except Exception as e:
+                        tg_send(chat_id, f"Помилка ордера: {e}")
+                else:
+                    tg_send(chat_id, "Невідома команда. Напиши /help")
         except Exception as e:
             log(f"[loop] {e}")
             time.sleep(3)
