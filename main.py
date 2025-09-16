@@ -1,7 +1,6 @@
 import os
 import logging
 import asyncio
-import sys
 import requests
 from dotenv import load_dotenv
 from telegram import Update
@@ -122,7 +121,7 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Перезапуск бота...")
     await context.application.stop()
-    os.execv(sys.executable, ['python'] + sys.argv)
+    os.execv(__file__, ["python"] + sys.argv)
 
 # Запуск бота
 def main():
