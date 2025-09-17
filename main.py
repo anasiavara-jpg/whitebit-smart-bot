@@ -1,8 +1,8 @@
 import os
 import sys
 import json
-import hmac
 import time
+import hmac
 import base64
 import hashlib
 import logging
@@ -10,39 +10,39 @@ import requests
 import threading
 from typing import Dict, Any, Optional
 
-# --- Налаштування ---
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-API_PUBLIC = (os.getenv("API_PUBLIC_KEY") or os.getenv("API_PUBLIC") or "").strip()
-API_SECRET = (os.getenv("API_SECRET_KEY") or os.getenv("API_SECRET") or "").strip()
+API_PUBLIC = (os.getenv("API_PUBLIC_KEY") or "").strip()
+API_SECRET = (os.getenv("API_SECRET_KEY") or "").strip()
 TRADING_ENABLED = (os.getenv("TRADING_ENABLED", "false").lower() in ["1", "true", "yes"])
 
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 WB_PUBLIC = "https://whitebit.com/api/v4/public"
 WB_PRIVATE = "https://whitebit.com/api/v4"
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- Глобальні змінні ---
 MARKETS = []
 DEFAULT_AMOUNT = {}
 TP_MAP = {}
 SL_MAP = {}
 AUTO_TRADE = False
+
 VALID_QUOTE_ASSETS = {"USDT", "USDC", "BTC", "ETH"}
+
+def log(msg: str):
+    logging.info(msg)
+
+def tg_send(chat_id: int, text: str):
+    try:
+        requests.post(f"{TG_API}/sendMessage", json={"chat_id": chat_id, "text": text})
+    except Exception as e:
+        log(f"[tg_send] {e}")
 
 def is_valid_market(m: str) -> bool:
     if "_" not in m:
         return False
     base, quote = m.split("_", 1)
     return bool(base) and quote in VALID_QUOTE_ASSETS
-
-# --- Утиліти ---
-def tg_send(chat_id: int, text: str):
-    try:
-        requests.post(f"{TG_API}/sendMessage", json={"chat_id": chat_id, "text": text})
-    except Exception as e:
-        log.error(f"[tg_send] {e}")
 
 def make_signature_payload(path: str, data: Optional[Dict[str, Any]] = None):
     data = data or {}
@@ -51,94 +51,92 @@ def make_signature_payload(path: str, data: Optional[Dict[str, Any]] = None):
     body_json = json.dumps(data, separators=(",", ":"))
     payload_b64 = base64.b64encode(body_json.encode()).decode()
     signature = hmac.new(API_SECRET.encode(), body_json.encode(), hashlib.sha512).hexdigest()
-    return body_json, payload_b64, signature, path
+    return body_json, payload_b64, signature
 
-def wb_private_post(path: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    body_json, payload_b64, signature, _ = make_signature_payload(path, data)
-    headers = {
-        "Content-Type": "application/json",
-        "X-TXC-APIKEY": API_PUBLIC,
-        "X-TXC-PAYLOAD": payload_b64,
-        "X-TXC-SIGNATURE": signature,
-    }
-    r = requests.post(f"{WB_PRIVATE}{path}", data=body_json, headers=headers, timeout=30)
-    log.info(f"[WB POST] {path} -> {r.status_code}")
-    if r.status_code != 200:
-        log.error(f"WhiteBIT error: {r.text}")
-    return r.json() if r.text else {}
+def wb_private_post(path: str, data: Optional[Dict[str, Any]] = None):
+    try:
+        body_json, payload_b64, signature = make_signature_payload(path, data)
+        headers = {
+            "Content-Type": "application/json",
+            "X-TXC-APIKEY": API_PUBLIC,
+            "X-TXC-PAYLOAD": payload_b64,
+            "X-TXC-SIGNATURE": signature,
+        }
+        r = requests.post(f"{WB_PRIVATE}{path}", data=body_json, headers=headers, timeout=30)
+        log(f"[WB POST] {path} -> {r.status_code} {r.text[:100]}")
+        r.raise_for_status()
+        return r.json() if r.text else {}
+    except Exception as e:
+        log(f"[wb_private_post] {e}")
+        return {}
 
 def wb_price(market: str) -> Optional[float]:
     try:
         r = requests.get(f"{WB_PUBLIC}/ticker", timeout=15)
+        r.raise_for_status()
         data = r.json()
         info = data.get(market.upper())
         return float(info["last_price"]) if info else None
     except Exception as e:
-        log.error(f"[wb_price] {e}")
+        log(f"[wb_price] {e}")
         return None
 
-def wb_balance() -> Dict[str, str]:
-    try:
-        data = wb_private_post("/api/v4/main-account/balance")
-        return {k: v.get("main_balance", "0") for k, v in data.items() if float(v.get("main_balance", "0") or 0) > 0}
-    except Exception as e:
-        log.error(f"[wb_balance] {e}")
-        return {}
+def wb_balance():
+    return wb_private_post("/api/v4/main-account/balance")
 
-def wb_order_market(market: str, side: str, amount: str) -> Dict[str, Any]:
-    try:
-        payload = {"market": market.upper(), "side": side.lower(), "amount": str(amount)}
-        return wb_private_post("/api/v4/order/market", payload)
-    except Exception as e:
-        log.error(f"[wb_order_market] {e}")
-        return {"error": str(e)}
-
-# --- Основна логіка ---
-def auto_trade_loop():
-    while AUTO_TRADE:
-        try:
-            for market in [m for m in MARKETS if is_valid_market(m)]:
-                price = wb_price(market)
-                if not price:
-                    continue
-                tp = TP_MAP.get(market)
-                sl = SL_MAP.get(market)
-                amount = DEFAULT_AMOUNT.get(market, 0)
-                log.info(f"[AUTO] {market} price={price}, TP={tp}, SL={sl}, amount={amount}")
-                # тут може бути логіка купівлі/продажу при досягненні TP/SL
-            time.sleep(60)
-        except Exception as e:
-            log.error(f"[auto_trade_loop] {e}")
-            time.sleep(5)
-
-def hourly_report(chat_id: int):
+def hourly_report():
     while True:
         try:
-            bals = wb_balance()
-            prices = [f"{m}: {wb_price(m)}" for m in MARKETS if is_valid_market(m)]
-            tg_send(chat_id, "📊 Звіт:
-" + "
-".join(prices) + f"
-Баланс: {bals}")
-            time.sleep(3600)
+            if MARKETS:
+                status_lines = []
+                for m in MARKETS:
+                    if not is_valid_market(m):
+                        continue
+                    price = wb_price(m)
+                    status_lines.append(f"{m}: price={price}, amount={DEFAULT_AMOUNT.get(m,'-')}, TP={TP_MAP.get(m,'-')} SL={SL_MAP.get(m,'-')}")
+                if status_lines:
+                    tg_send(chat_id=CHAT_ID, text="Hourly report:\n" + "\n".join(status_lines))
         except Exception as e:
-            log.error(f"[hourly_report] {e}")
-            time.sleep(3600)
+            log(f"[hourly_report] {e}")
+        time.sleep(3600)
 
-def start_bot():
-    global AUTO_TRADE
-    AUTO_TRADE = True
-    threading.Thread(target=auto_trade_loop, daemon=True).start()
-    log.info("Bot started. Autotrading ON.")
+def run_bot():
+    global CHAT_ID
+    offset = None
+    log("Bot started.")
+    threading.Thread(target=hourly_report, daemon=True).start()
+    while True:
+        try:
+            resp = requests.get(f"{TG_API}/getUpdates", params={"timeout": 50, "offset": offset}, timeout=80)
+            updates = resp.json().get("result", [])
+            for u in updates:
+                offset = max(offset or 0, u["update_id"] + 1)
+                msg = u.get("message") or u.get("edited_message")
+                if not msg or "text" not in msg:
+                    continue
+                CHAT_ID = msg["chat"]["id"]
+                text = msg["text"].strip()
+                parts = text.split()
+                cmd = parts[0].lower()
 
-def stop_bot():
-    global AUTO_TRADE
-    AUTO_TRADE = False
-    log.info("Bot stopped.")
+                if cmd == "/start":
+                    tg_send(CHAT_ID, "Bot запущено і автоторгівля активна.")
+                elif cmd == "/removemarket":
+                    if len(parts) > 1:
+                        try:
+                            MARKETS.remove(parts[1].upper())
+                            tg_send(CHAT_ID, f"Ринок {parts[1]} видалено.")
+                        except ValueError:
+                            tg_send(CHAT_ID, f"Ринок {parts[1]} відсутній.")
+                elif cmd == "/restart":
+                    tg_send(CHAT_ID, "Перезапуск...")
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception as e:
+            log(f"[loop] {e}")
+            time.sleep(3)
 
 if __name__ == "__main__":
     if not BOT_TOKEN:
-        log.error("BOT_TOKEN не знайдений.")
+        log("BOT_TOKEN відсутній.")
         sys.exit(1)
-    log.info("Bot is up and running.")
-    start_bot()
+    run_bot()
