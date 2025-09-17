@@ -15,12 +15,12 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Завантаження змінних оточення
 load_dotenv()
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
 API_PUBLIC = os.getenv("API_PUBLIC_KEY", "")
 API_SECRET = os.getenv("API_SECRET_KEY", "")
 
 if not TOKEN:
-    print("⚠️ TELEGRAM_TOKEN відсутній. Додайте його в Environment.")
+    print("⚠️ BOT_TOKEN відсутній. Додайте його в Environment.")
     sys.exit(1)
 
 logging.basicConfig(
@@ -43,13 +43,43 @@ def is_valid_market(m: str) -> bool:
     base, quote = m.split("_", 1)
     return bool(base) and quote in VALID_QUOTE_ASSETS
 
+
+def build_hourly_report(pairs_info):
+    lines = ["📊 Щогодинний звіт:"]
+    for pair, v in pairs_info.items():
+        tp = v.get("tp", "-")
+        sl = v.get("sl", "-")
+        amt = v.get("amt", "-")
+        lines.append(f"{pair}: TP={tp} SL={sl} Amt={amt}")
+    return "\n".join(lines)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Бот запущений і готовий до торгівлі.")
     asyncio.create_task(auto_trade_loop(context))
 
+
+def build_hourly_report(pairs_info):
+    lines = ["📊 Щогодинний звіт:"]
+    for pair, v in pairs_info.items():
+        tp = v.get("tp", "-")
+        sl = v.get("sl", "-")
+        amt = v.get("amt", "-")
+        lines.append(f"{pair}: TP={tp} SL={sl} Amt={amt}")
+    return "\n".join(lines)
+
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("♻️ Перезапуск бота...")
     os.execv(sys.executable, ["python"] + sys.argv)
+
+
+def build_hourly_report(pairs_info):
+    lines = ["📊 Щогодинний звіт:"]
+    for pair, v in pairs_info.items():
+        tp = v.get("tp", "-")
+        sl = v.get("sl", "-")
+        amt = v.get("amt", "-")
+        lines.append(f"{pair}: TP={tp} SL={sl} Amt={amt}")
+    return "\n".join(lines)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -65,6 +95,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text)
 
+
+def build_hourly_report(pairs_info):
+    lines = ["📊 Щогодинний звіт:"]
+    for pair, v in pairs_info.items():
+        tp = v.get("tp", "-")
+        sl = v.get("sl", "-")
+        amt = v.get("amt", "-")
+        lines.append(f"{pair}: TP={tp} SL={sl} Amt={amt}")
+    return "\n".join(lines)
+
 async def removemarket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Вкажіть ринок: /removemarket BTC_USDT")
@@ -75,6 +115,16 @@ async def removemarket(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🗑 {market} видалено зі списку.")
     else:
         await update.message.reply_text(f"{market} не знайдено у списку.")
+
+
+def build_hourly_report(pairs_info):
+    lines = ["📊 Щогодинний звіт:"]
+    for pair, v in pairs_info.items():
+        tp = v.get("tp", "-")
+        sl = v.get("sl", "-")
+        amt = v.get("amt", "-")
+        lines.append(f"{pair}: TP={tp} SL={sl} Amt={amt}")
+    return "\n".join(lines)
 
 async def auto_trade_loop(context):
     global AUTO_TRADE
