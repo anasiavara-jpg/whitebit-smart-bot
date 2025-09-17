@@ -122,6 +122,9 @@ BASE_URL = "https://whitebit.com/api/v4"
 
 def sign_request(payload):
     data = json.dumps(payload, separators=(',', ':'))
+    if var is None:
+        logging.error('Отримано None замість тексту для кодування. Пропускаю цю пару.')
+        continue
     signature = hmac.new(API_SECRET.encode(), data.encode(), hashlib.sha512).hexdigest()
     return {
         "Content-Type": "application/json",
