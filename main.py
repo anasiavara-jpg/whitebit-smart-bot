@@ -124,7 +124,7 @@ def sign_request(payload):
     data = json.dumps(payload, separators=(',', ':'))
     if var is None:
         logging.error('Отримано None замість тексту для кодування. Пропускаю цю пару.')
-        continue
+            return  # заміна continue, щоб уникнути помилки
     signature = hmac.new(API_SECRET.encode(), data.encode(), hashlib.sha512).hexdigest()
     return {
         "Content-Type": "application/json",
@@ -235,7 +235,7 @@ async def auto_trade_loop(app):
                     price = get_price(m)
                     if m not in LAST_PRICE:
                         LAST_PRICE[m] = price
-                        continue
+            return  # заміна continue, щоб уникнути помилки
                     if price <= LAST_PRICE[m] * 0.99:
                         amt = DEFAULT_AMOUNT.get(m, 0.001)
                         res = create_order(m, "buy", amt)
@@ -354,19 +354,19 @@ async def auto_trade_loop(app):
         if AUTO_TRADE:
             for m in list(MARKETS.keys()):
                 if not is_valid_market(m):
-                    continue
+            return  # заміна continue, щоб уникнути помилки
                 tp = TP.get(m)
                 sl = SL.get(m)
                 amt = DEFAULT_AMOUNT.get(m)
                 if tp is None or sl is None or amt is None:
-                    continue
+            return  # заміна continue, щоб уникнути помилки
                 try:
                     price = get_price(m)
                     if price is None:
-                        continue
+            return  # заміна continue, щоб уникнути помилки
                     if m not in LAST_PRICE:
                         LAST_PRICE[m] = price
-                        continue
+            return  # заміна continue, щоб уникнути помилки
                     # buy trigger: -1% від референсної
                     if price <= LAST_PRICE[m] * 0.99:
                         res = create_order(m, "buy", amt)
