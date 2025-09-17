@@ -1,3 +1,59 @@
+import logging
+import aiohttp
+from telegram import Update
+from telegram.ext import ContextTypes
+import asyncio
+
+# ✅ Перевірка токена перед стартом
+async def check_bot_instance(application=None):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe") as resp:
+                data = await resp.json()
+                if not data.get("ok"):
+                    logging.error("[TOKEN] Невірний токен або бот не активний.")
+                    if application:
+                        await application.bot.send_message(chat_id=CHAT_ID, text="❌ Запуск скасовано: невірний токен.")
+                    return False
+        return True
+    except Exception as e:
+        logging.error(f"[TOKEN] Помилка перевірки токена: {e}")
+        return True
+
+# 🧹 Фільтр ринків
+VALID_QUOTE_ASSETS = {"USDT", "USDC", "BTC", "ETH"}
+
+def is_valid_market(m: str) -> bool:
+    if "_" not in m:
+        return False
+    base, quote = m.split("_", 1)
+    return bool(base) and quote in VALID_QUOTE_ASSETS
+
+# ⏳ Щогодинний звіт
+async def hourly_report(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        report_lines = ["📊 Щогодинний звіт:"]
+        for m in [x for x in MARKETS if is_valid_market(x)]:
+            price = LAST_PRICES.get(m, "—")
+            tp = TP_MAP.get(m, "—")
+            sl = SL_MAP.get(m, "—")
+            amt = DEFAULT_AMOUNT.get(m, "—")
+            report_lines.append(f"{m}: TP={tp} SL={sl} Amt={amt} Ціна={price}")
+        await context.bot.send_message(chat_id=CHAT_ID, text="\n".join(report_lines))
+    except Exception as e:
+        logging.error(f"[REPORT] Помилка звіту: {e}")
+
+# 🔄 Оновлена команда /restart
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global AUTO_TRADE
+    await update.message.reply_text("♻ Перезапуск бота...")
+    if not await check_bot_instance(context.application):
+        await update.message.reply_text("⚠ Інший інстанс вже працює. Запуск скасовано.")
+        return
+    AUTO_TRADE = False
+    AUTO_TRADE = True
+    await update.message.reply_text("✅ Бот успішно перезапущений. Автоторгівля УВІМКНЕНА.")
+
 
 import aiohttp
 
