@@ -1,155 +1,181 @@
-import os
-import logging
 import asyncio
-import requests
+import logging
+import os
+import json
+import aiohttp
+from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application, CommandHandler, ContextTypes
+)
 
-# Завантаження змінних
+# === ЛОГІ ===
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+
 load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("BOT_TOKEN не знайдений у .env")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+WHITEBIT_API = "https://whitebit.com/api/v4"
 
-# Логування
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-logger = logging.getLogger(__name__)
+markets = {}
+AUTO_TRADE = True
 
-# Глобальні змінні
-AUTO_TRADE = False
-MARKETS = []
-DEFAULT_AMOUNT = {}
-TP_MAP = {}
-SL_MAP = {}
+# === ДОПОМІЖНІ ФУНКЦІЇ ===
+async def fetch_price(session, market):
+    try:
+        async with session.get(f"{WHITEBIT_API}/public/ticker?market={market}") as resp:
+            data = await resp.json()
+            return float(data.get(market, {}).get("last_price", 0))
+    except Exception as e:
+        logging.error(f"Помилка отримання ціни {market}: {e}")
+        return None
 
-VALID_QUOTE_ASSETS = {"USDT", "USDC", "BTC", "ETH"}
+async def save_markets():
+    with open("markets.json", "w", encoding="utf-8") as f:
+        json.dump(markets, f, indent=2)
 
-def is_valid_market(m: str) -> bool:
-    if "_" not in m:
-        return False
-    base, quote = m.split("_", 1)
-    return bool(base) and quote in VALID_QUOTE_ASSETS
+async def load_markets():
+    global markets
+    try:
+        with open("markets.json", "r", encoding="utf-8") as f:
+            markets = json.load(f)
+    except FileNotFoundError:
+        markets = {}
 
+# === КОМАНДИ ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global AUTO_TRADE
-    AUTO_TRADE = True
-    await update.message.reply_text("✅ Бот запущено. Автоторгівля активна.")
+    await update.message.reply_text("✅ Бот запущений. Автоторгівля увімкнена, використовуйте /help")
 
-async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global AUTO_TRADE
-    AUTO_TRADE = False
-    await update.message.reply_text("⏹ Автоторгівлю зупинено.")
-
-async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔄 Перезапуск бота...")
-    os.execv(__file__, ["python"] + os.sys.argv)
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "/price <ринок> — ціна
+"
+        "/balance — баланс
+"
+        "/buy <ринок> <сума> — купити
+"
+        "/sell <ринок> <сума> — продати
+"
+        "/setamount <ринок> <сума> — дефолтна сума
+"
+        "/market <ринок> — додати ринок
+"
+        "/removemarket <ринок> — видалити ринок
+"
+        "/settp <ринок> <відсоток> — встановити TP
+"
+        "/setsl <ринок> <відсоток> — встановити SL
+"
+        "/status — показати всі ринки
+"
+        "/auto on|off — увімк/вимк автоторгівлю
+"
+        "/stop — зупинити бота
+"
+        "/restart — перезапустити бота"
+    )
+    await update.message.reply_text(help_text)
 
 async def market(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Приклад: /market BTC_USDT")
+        await update.message.reply_text("⚠️ Вкажіть ринок, напр. /market DOGE_USDT")
         return
     m = context.args[0].upper()
-    if is_valid_market(m):
-        if m not in MARKETS:
-            MARKETS.append(m)
-            await update.message.reply_text(f"✅ Додано {m}.")
-        else:
-            await update.message.reply_text(f"{m} вже є в списку.")
-    else:
-        await update.message.reply_text("⚠️ Невалідний ринок.")
+    markets[m] = {"amount": None, "tp": None, "sl": None}
+    await save_markets()
+    await update.message.reply_text(f"✅ Додано {m}")
 
 async def removemarket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Приклад: /removemarket BTC_USDT")
+        await update.message.reply_text("⚠️ Вкажіть ринок")
         return
     m = context.args[0].upper()
-    if m in MARKETS:
-        MARKETS.remove(m)
-        await update.message.reply_text(f"❌ {m} видалено зі списку.")
+    if m in markets:
+        del markets[m]
+        await save_markets()
+        await update.message.reply_text(f"🗑 Ринок {m} видалено")
     else:
-        await update.message.reply_text(f"{m} не знайдено у списку.")
-
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("💰 Баланси поки що заглушка (API можна додати).")
+        await update.message.reply_text("❌ Ринку немає у списку")
 
 async def setamount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
-        await update.message.reply_text("Приклад: /setamount BTC_USDT 10")
+        await update.message.reply_text("⚠️ Використання: /setamount <ринок> <сума>")
         return
-    m, a = context.args
-    DEFAULT_AMOUNT[m.upper()] = float(a)
-    await update.message.reply_text(f"🔧 Для {m.upper()} встановлено суму {a}")
+    m, amount = context.args[0].upper(), context.args[1]
+    if m not in markets:
+        await update.message.reply_text("❌ Спочатку додайте ринок командою /market")
+        return
+    markets[m]["amount"] = float(amount)
+    await save_markets()
+    await update.message.reply_text(f"Сума для {m}: {amount}")
 
 async def settp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
-        await update.message.reply_text("Приклад: /settp BTC_USDT 1.5")
+        await update.message.reply_text("⚠️ Використання: /settp <ринок> <відсоток>")
         return
-    m, tp = context.args
-    TP_MAP[m.upper()] = float(tp)
-    await update.message.reply_text(f"🎯 TP для {m.upper()} встановлено {tp}%")
+    m, tp = context.args[0].upper(), context.args[1]
+    if m not in markets:
+        await update.message.reply_text("❌ Спочатку додайте ринок командою /market")
+        return
+    markets[m]["tp"] = float(tp)
+    await save_markets()
+    await update.message.reply_text(f"TP для {m}: {tp}%")
 
 async def setsl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
-        await update.message.reply_text("Приклад: /setsl BTC_USDT 1")
+        await update.message.reply_text("⚠️ Використання: /setsl <ринок> <відсоток>")
         return
-    m, sl = context.args
-    SL_MAP[m.upper()] = float(sl)
-    await update.message.reply_text(f"🛑 SL для {m.upper()} встановлено {sl}%")
+    m, sl = context.args[0].upper(), context.args[1]
+    if m not in markets:
+        await update.message.reply_text("❌ Спочатку додайте ринок командою /market")
+        return
+    markets[m]["sl"] = float(sl)
+    await save_markets()
+    await update.message.reply_text(f"SL для {m}: {sl}%")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_text = "📊 *Статус бота*
-"
-    status_text += f"Автоторгівля: {'ON' if AUTO_TRADE else 'OFF'}
-"
-    if MARKETS:
-        status_text += "Ринки: " + ", ".join(MARKETS) + "
-"
-    await update.message.reply_text(status_text)
+    if not markets:
+        await update.message.reply_text("❌ Список ринків порожній")
+        return
+    text = "\n".join([f"{m}: amount={d['amount']}, TP={d['tp']}, SL={d['sl']}" for m, d in markets.items()])
+    await update.message.reply_text(text)
 
-async def auto_trading_loop(app: Application):
-    while True:
-        if AUTO_TRADE:
-            for m in [mm for mm in MARKETS if is_valid_market(mm)]:
-                try:
-                    # Тут буде логіка торгівлі
-                    logger.info(f"Працюємо з {m}")
-                except Exception as e:
-                    logger.error(f"Помилка з {m}: {e}")
-        await asyncio.sleep(60)
-
-async def hourly_report(app: Application):
-    while True:
-        if MARKETS:
-            text = "⏳ Щогодинний звіт:
-" + ", ".join(MARKETS)
-            for chat_id in app.chat_ids:
-                try:
-                    await app.bot.send_message(chat_id=chat_id, text=text)
-                except:
-                    pass
-        await asyncio.sleep(3600)
+# === АВТОТОРГІВЛЯ ===
+async def trade_loop(app):
+    async with aiohttp.ClientSession() as session:
+        while True:
+            if AUTO_TRADE:
+                for m in markets:
+                    price = await fetch_price(session, m)
+                    if price:
+                        logging.info(f"Ціна {m}: {price}")
+            await asyncio.sleep(10)
 
 async def main():
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stop", stop))
-    app.add_handler(CommandHandler("restart", restart))
-    app.add_handler(CommandHandler("market", market))
-    app.add_handler(CommandHandler("removemarket", removemarket))
-    app.add_handler(CommandHandler("balance", balance))
-    app.add_handler(CommandHandler("setamount", setamount))
-    app.add_handler(CommandHandler("settp", settp))
-    app.add_handler(CommandHandler("setsl", setsl))
-    app.add_handler(CommandHandler("status", status))
+    await load_markets()
+    application = Application.builder().token(BOT_TOKEN).build()
 
-    asyncio.create_task(auto_trading_loop(app))
-    asyncio.create_task(hourly_report(app))
+    # Встановлення хендлерів
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("market", market))
+    application.add_handler(CommandHandler("removemarket", removemarket))
+    application.add_handler(CommandHandler("setamount", setamount))
+    application.add_handler(CommandHandler("settp", settp))
+    application.add_handler(CommandHandler("setsl", setsl))
+    application.add_handler(CommandHandler("status", status))
 
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    await app.updater.idle()
+    # Стартуємо polling і trade loop паралельно
+    loop = asyncio.get_running_loop()
+    loop.create_task(trade_loop(application))
+
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    await application.updater.idle()
 
 if __name__ == "__main__":
     asyncio.run(main())
