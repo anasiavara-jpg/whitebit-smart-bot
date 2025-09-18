@@ -140,8 +140,16 @@ def main():
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(CommandHandler("restart", restart))
 
-    asyncio.get_event_loop().create_task(trade_loop(app))
-    asyncio.get_event_loop().create_task(hourly_report(app))
+    asyncio.get_running_loop().create_task(trade_loop(app))
+    asyncio.get_running_loop().create_task(hourly_report(app))
+
+    import asyncio
+
+    # Автозняття вебхука перед polling
+    try:
+        asyncio.run(app.bot.delete_webhook())
+    except Exception as e:
+        print(f"Не вдалося зняти вебхук: {e}")
 
     app.run_polling()
 
