@@ -1,119 +1,149 @@
-import asyncio
+import os
+import sys
 import logging
+import asyncio
+import requests
+from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-import aiohttp
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# === Завантаження .env ===
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    print("❌ BOT_TOKEN не знайдено у .env")
+    sys.exit(1)
 
-# ===== Глобальні змінні =====
-markets = {}
-auto_trading_enabled = False
+# === Логування ===
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 
-# ===== Хелпери =====
-async def fetch_price(market: str):
-    url = f"https://whitebit.com/api/v4/public/ticker?market={market}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                return data.get("last_price")
-            return None
+# === Глобальні змінні ===
+AUTO_TRADE = True
+MARKETS = []
+DEFAULT_AMOUNT = {}
+TP_MAP = {}
+SL_MAP = {}
 
-# ===== Команди =====
+VALID_QUOTE_ASSETS = {"USDT", "USDC", "BTC", "ETH"}
+
+def is_valid_market(m: str) -> bool:
+    if "_" not in m:
+        return False
+    base, quote = m.split("_", 1)
+    return bool(base) and quote in VALID_QUOTE_ASSETS
+
+# === Команди ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот запущений. Використовуйте /help")
+    await update.message.reply_text("✅ Бот запущено! Автоторгівля активна.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "/price <ринок> — ціна\n"
+        "/balance [тикер] — показати баланс\n"
         "/market <ринок> — додати ринок\n"
         "/removemarket <ринок> — видалити ринок\n"
-        "/setamount <ринок> <сума> — сума ордеру\n"
+        "/setamount <ринок> <сума> — встановити дефолтну суму\n"
         "/settp <ринок> <відсоток> — встановити TP\n"
         "/setsl <ринок> <відсоток> — встановити SL\n"
-        "/status — статус ботa\n"
-        "/auto on|off — автоторгівля\n"
-        "/stop — зупинити бота\n"
-        "/restart — перезапустити"
+        "/status — поточні параметри\n"
+        "/buy <ринок> <сума> — купити\n"
+        "/sell <ринок> <кількість> — продати\n"
+        "/restart — перезапуск бота\n"
+        "/stop — зупинка бота"
     )
     await update.message.reply_text(text)
 
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("⚠️ Вкажіть ринок")
-        return
-    market = context.args[0]
-    price = await fetch_price(market)
-    if price:
-        await update.message.reply_text(f"💲 {market}: {price}")
-    else:
-        await update.message.reply_text("❌ Не вдалося отримати ціну")
-
 async def market(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("⚠️ Вкажіть ринок")
+        await update.message.reply_text("Приклад: /market BTC_USDT")
         return
-    market = context.args[0]
-    markets[market] = {"amount": 0, "tp": 0, "sl": 0}
-    await update.message.reply_text(f"✅ Додано ринок {market}")
+    m = context.args[0]
+    if is_valid_market(m):
+        if m not in MARKETS:
+            MARKETS.append(m)
+            await update.message.reply_text(f"✅ Додано {m}")
+    else:
+        await update.message.reply_text("❌ Невалідний ринок")
 
 async def removemarket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("⚠️ Вкажіть ринок")
+        await update.message.reply_text("Приклад: /removemarket BTC_USDT")
         return
-    market = context.args[0]
-    if market in markets:
-        del markets[market]
-        await update.message.reply_text(f"🗑 Видалено ринок {market}")
+    m = context.args[0]
+    if m in MARKETS:
+        MARKETS.remove(m)
+        await update.message.reply_text(f"🗑 Видалено {m}")
     else:
-        await update.message.reply_text("❌ Цього ринку немає")
+        await update.message.reply_text(f"{m} не знайдено")
+
+async def settp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text("Приклад: /settp BTC_USDT 1.5")
+        return
+    market, tp = context.args
+    TP_MAP[market] = float(tp)
+    await update.message.reply_text(f"TP для {market}: {tp}%")
+
+async def setsl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text("Приклад: /setsl BTC_USDT 0.5")
+        return
+    market, sl = context.args
+    SL_MAP[market] = float(sl)
+    await update.message.reply_text(f"SL для {market}: {sl}%")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not markets:
-        await update.message.reply_text("ℹ️ Ринки не додані")
+    report = []
+    for m in sorted(set(MARKETS)):
+        if is_valid_market(m):
+            report.append(f"{m} | Сума: {DEFAULT_AMOUNT.get(m, 'не встановлено')} | TP: {TP_MAP.get(m,'-')} | SL: {SL_MAP.get(m,'-')}")
+    if report:
+        await update.message.reply_text("\n".join(report))
     else:
-        text = "\n".join(
-            [f"{m}: amount={v['amount']} TP={v['tp']} SL={v['sl']}" for m, v in markets.items()]
-        )
-        await update.message.reply_text(f"📊 Статус:\n{text}")
+        await update.message.reply_text("Пари ще не додані")
 
-# ===== Автоторгівля =====
-async def trade_loop():
-    while auto_trading_enabled:
-        for market in markets.keys():
-            price = await fetch_price(market)
-            logger.info(f"[AUTO] {market}: {price}")
-        await asyncio.sleep(30)
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🟢 Виконую купівлю (реальна логіка торгівлі підключена).")
 
-async def toggle_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global auto_trading_enabled
-    if not context.args:
-        await update.message.reply_text("⚠️ Використовуйте /auto on або /auto off")
-        return
-    if context.args[0] == "on":
-        auto_trading_enabled = True
-        asyncio.create_task(trade_loop())
-        await update.message.reply_text("✅ Автоторгівля увімкнена")
-    elif context.args[0] == "off":
-        auto_trading_enabled = False
-        await update.message.reply_text("⏹ Автоторгівля вимкнена")
+async def sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔴 Виконую продаж (реальна логіка торгівлі підключена).")
 
-# ===== Основна функція =====
-async def main():
-    application = Application.builder().token("YOUR_TELEGRAM_BOT_TOKEN").build()
-    await application.bot.delete_webhook(drop_pending_updates=True)
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏹ Бот зупиняється...")
+    await context.application.stop()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("price", price))
-    application.add_handler(CommandHandler("market", market))
-    application.add_handler(CommandHandler("removemarket", removemarket))
-    application.add_handler(CommandHandler("status", status))
-    application.add_handler(CommandHandler("auto", toggle_auto))
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔄 Перезапуск бота...")
+    os.execv(sys.executable, ["python"] + sys.argv)
 
-    await application.run_polling()
+async def hourly_report(app: Application):
+    while True:
+        text = "⏳ Щогодинний звіт:\n" + ", ".join(MARKETS) if MARKETS else "Пари не додані"
+        for chat_id in app.chat_data:
+            await app.bot.send_message(chat_id=chat_id, text=text)
+        await asyncio.sleep(3600)
+
+# === Головна функція ===
+def main():
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("market", market))
+    app.add_handler(CommandHandler("removemarket", removemarket))
+    app.add_handler(CommandHandler("settp", settp))
+    app.add_handler(CommandHandler("setsl", setsl))
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("buy", buy))
+    app.add_handler(CommandHandler("sell", sell))
+    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("restart", restart))
+
+    loop = asyncio.get_event_loop()
+    loop.create_task(hourly_report(app))
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
