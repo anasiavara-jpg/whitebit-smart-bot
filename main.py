@@ -7,6 +7,8 @@ import hashlib
 import httpx
 import json
 
+print("✅ main.py started...")
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
@@ -305,6 +307,7 @@ async def main():
     load_markets()
     await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(monitor_orders())
+    print("🚀 Bot is running and waiting for commands...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
