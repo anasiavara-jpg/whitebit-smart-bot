@@ -1,36 +1,34 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-main.py — Telegram-бот автоторгівлі для WhiteBIT (PTB v20.x)
+Telegram-бот автоторгівлі для WhiteBIT (PTB v20.x, aiohttp).
 Особливості:
- • Видалення webhook перед стартом polling.
- • Команди: /start, /help, /price, /balance, /buy, /sell, /setamount,
-            /market, /removemarket, /settp, /setsl, /status, /auto, /stop, /restart
- • Автоторгівля по кожній парі з TP/SL у %, окрема логіка на JobQueue.
- • Щогодинний звіт із параметрами.
- • Перевірки None/валідності, м'який відлов помилок — бот не падає.
- • Реальна торгівля WhiteBIT можлива при наявності API ключів (див. змінні середовища).
+ • Видалення webhook перед стартом polling (для Render).
+ • Команди: /start, /help, /price, /balance, /buy, /sell,
+            /market, /removemarket, /setamount, /settp, /setsl,
+            /status, /auto, /stop, /restart
+ • Лімітні ордери + автоторгівля з TP/SL у %.
+ • Асинхронні запити через aiohttp.
 """
 
 import os
 import hmac
 import json
 import time
-import math
-import base64
 import asyncio
 import logging
+import base64
 from hashlib import sha512
 from typing import Dict, Any, Optional
 
-import requests
+import aiohttp
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, ContextTypes, JobQueue, Job
 )
 
-# ---------- Налаштування логів ----------
+# ---------- Логи ----------
 logging.basicConfig(
     format="%(asctime)s %(levelname)s - %(message)s",
     level=logging.INFO
@@ -47,383 +45,214 @@ REAL_TRADE = os.getenv("REAL_TRADING", "false").lower() in {"1","true","yes","on
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN відсутній у змінних середовища")
 
-# ---------- Глобальний стан ----------
-State: Dict[str, Any] = {
-    "auto": True,
-    "markets": {},   # "DOGE_USDT": {"amount": 5.0, "tp": 0.4, "sl": 0.3, "position": 0.0, "entry": 0.0}
-    "last_report": 0.0,
-}
-
-# ---------- WhiteBIT helpers ----------
-
 WB_PUBLIC = "https://whitebit.com/api/v4/public"
+WB_PRIVATE = "https://whitebit.com/api/v4"
 
-def valid_market(m: str) -> bool:
-    return isinstance(m, str) and "_" in m and m.upper() == m and all(c.isalnum() or c == "_" for c in m)
+# ---------- Глобальні змінні ----------
+session: aiohttp.ClientSession | None = None
+user_state: Dict[int, Dict[str, Any]] = {}  # стани користувачів
 
-def wb_public(path: str, params: Optional[dict] = None) -> Optional[dict]:
-    try:
-        r = requests.get(f"{WB_PUBLIC}/{path.lstrip('/')}", params=params, timeout=10)
-        if r.status_code == 200:
-            return r.json()
-    except Exception as e:
-        log.warning("WB public error: %s", e)
-    return None
-
-def price_of(market: str) -> Optional[float]:
-    """Отримати ціну ринку з WhiteBIT (ticker)."""
-    data = wb_public("ticker", {"market": market})
-    try:
-        # очікувана відповідь: {"ticker": {"last_price": "0.123"}, "market":"DOGE_USDT"} або список
-        if isinstance(data, dict):
-            t = data.get("ticker") or data
-            p = t.get("last_price") or t.get("lastPrice") or t.get("price")
-            if p is not None:
-                return float(p)
-        if isinstance(data, list) and data:
-            # іноді API повертає список
-            for item in data:
-                if str(item.get("market","")).upper() == market:
-                    p = item.get("last_price") or item.get("price")
-                    if p is not None:
-                        return float(p)
-    except Exception as e:
-        log.warning("Parse price error for %s: %s", market, e)
-    return None
-
-# ---- Приватні запити (опціонально для реальної торгівлі) ----
-
-def wb_signed_headers(payload: dict) -> dict:
-    """
-    WhiteBIT v4: підпис через X-TXC-APIKEY / X-TXC-PAYLOAD / X-TXC-SIGNATURE.
-    Якщо формат у вашому акаунті інший — відкоригуйте цю функцію.
-    """
-    if not WB_API_KEY or not WB_API_SECRET:
-        raise RuntimeError("Немає WHITEBIT_API_KEY/WHITEBIT_API_SECRET")
-
-    payload.setdefault("request", "/api/v4/order/market")  # буде переписано реальною ендпоюнт-строкою у виклику
-    payload.setdefault("nonce", int(time.time() * 1000))
-
-    # WB очікує base64 від JSON payload, підписаний HMAC-SHA512
-    js = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    b64 = base64.b64encode(js).decode()
-    signature = hmac.new(WB_API_SECRET.encode("utf-8"), b64.encode("utf-8"), sha512).hexdigest()
-
+# ---------- WhiteBIT API ----------
+def _sign(body: dict) -> Dict[str, str]:
+    payload = json.dumps(body, separators=(",", ":"))
+    encoded = base64.b64encode(payload.encode()).decode()
+    signature = hmac.new(
+        WB_API_SECRET.encode(), encoded.encode(), sha512
+    ).hexdigest()
     return {
         "Content-Type": "application/json",
         "X-TXC-APIKEY": WB_API_KEY,
-        "X-TXC-PAYLOAD": b64,
+        "X-TXC-PAYLOAD": encoded,
         "X-TXC-SIGNATURE": signature,
     }
 
-def wb_private(path: str, payload: dict) -> dict:
-    url = f"https://whitebit.com{path}"
-    body = payload.copy()
-    body["request"] = path
-    headers = wb_signed_headers(body)
-    r = requests.post(url, headers=headers, data=json.dumps(body), timeout=15)
-    try:
-        return r.json()
-    except Exception:
-        return {"status": r.status_code, "text": r.text}
+async def wb_get_price(market: str) -> Optional[float]:
+    url = f"{WB_PUBLIC}/ticker?market={market}"
+    async with session.get(url) as resp:
+        if resp.status != 200:
+            return None
+        data = await resp.json()
+        return float(data.get("last", 0))
 
-def place_market_order(market: str, side: str, amount_in_quote: float) -> dict:
-    """
-    Ринковий ордер: side in {'buy','sell'}
-    amount_in_quote — сума у котирувальній валюті (наприклад, USDT)
-    """
-    if not REAL_TRADE:
-        return {"dry_run": True, "market": market, "side": side, "amount": amount_in_quote}
+async def wb_get_balance() -> Dict[str, float]:
+    url = f"{WB_PRIVATE}/trade-account/balance"
+    body = {"request": "/api/v4/trade-account/balance", "nonce": int(time.time()*1000)}
+    headers = _sign(body)
+    async with session.post(url, headers=headers, data=json.dumps(body)) as resp:
+        if resp.status != 200:
+            return {}
+        data = await resp.json()
+        return {k: float(v["available"]) for k,v in data.items()}
 
-    payload = {
+async def wb_place_order(market: str, side: str, amount: float, price: float) -> dict:
+    url = f"{WB_PRIVATE}/order"
+    body = {
         "market": market,
         "side": side,
-        "amount": str(amount_in_quote),
+        "amount": str(amount),
+        "price": str(price),
+        "request": "/api/v4/order",
+        "nonce": int(time.time()*1000)
     }
-    return wb_private("/api/v4/order/market", payload)
-
-def get_balance() -> dict:
-    if not REAL_TRADE:
-        # демонстрація
-        return {"dry_run": True, "USDT": 0.0}
-    return wb_private("/api/v4/trade-account/balance", {})
-
-# ---------- Допоміжні ----------
-
-def ensure_market_exists(market: str) -> bool:
-    if not valid_market(market):
-        return False
-    # Перевіримо у WB, що пара існує
-    data = wb_public("markets")
-    try:
-        if isinstance(data, list):
-            markets = {str(x).upper() for x in data}
-        elif isinstance(data, dict):
-            markets = {str(k).upper() for k in data.keys()}
-        else:
-            markets = set()
-        return market in markets or True  # якщо API повернув інший формат — не блокуємо
-    except Exception:
-        return True
-
-def status_text() -> str:
-    lines = ["Статус бота:"]
-    lines.append(f"Автоторгівля: {'увімкнена' if State['auto'] else 'вимкнена'}")
-    if not State["markets"]:
-        lines.append("Ринки: (порожньо)")
-    for m, cfg in State["markets"].items():
-        lines.append(f"{m}: amount={cfg.get('amount','-')}, TP={cfg.get('tp','-')}%, SL={cfg.get('sl','-')}%, "
-                     f"position={cfg.get('position',0.0)}, entry={cfg.get('entry',0.0)}")
-    return "\n".join(lines)
+    headers = _sign(body)
+    async with session.post(url, headers=headers, data=json.dumps(body)) as resp:
+        return await resp.json()
 
 # ---------- Команди ----------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Привіт! Я бот для автоторгівлі на WhiteBIT.\n"
+        "Використовуй /help для списку команд."
+    )
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = dedent("""\
-        Бот запущено. Автоторгівля працює.
-        Доступні команди — /help
-    """)
-    await update.message.reply_text(text)
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "/price BTCUSDT - показати ціну\n"
+        "/balance - баланс\n"
+        "/market BTCUSDT - вибрати ринок\n"
+        "/removemarket - прибрати ринок\n"
+        "/setamount 0.1 - задати обсяг\n"
+        "/settp 3 - тейк-профіт (%)\n"
+        "/setsl 2 - стоп-лос (%)\n"
+        "/buy BTCUSDT 0.1 65000 - лімітний buy\n"
+        "/sell BTCUSDT 0.1 67000 - лімітний sell\n"
+        "/status - показати параметри\n"
+        "/auto - запустити автоторгівлю\n"
+        "/stop - зупинити автоторгівлю\n"
+        "/restart - перезапуск"
+    )
 
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = dedent("""\
-        Команди:
-        /price <ринок> — ціна
-        /balance — баланс
-        /buy <ринок> [сума] — купити на суму у котирувальній валюті
-        /sell <ринок> [сума] — продати на суму у котирувальній валюті
-        /setamount <ринок> <сума> — дефолтна сума
-        /market <ринок> — додати ринок
-        /removemarket <ринок> — видалити ринок
-        /settp <ринок> <відсоток> — встановити TP
-        /setsl <ринок> <відсоток> — встановити SL
-        /status — поточні пари та параметри
-        /auto on|off — автоторгівля
-        /stop — зупинити бота (вимикає автоторгівлю)
-        /restart — перезапустити процес
-    """)
-    await update.message.reply_text(text)
-
-async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        return await update.message.reply_text("Синтаксис: /price DOGE_USDT")
+        return await update.message.reply_text("Вкажи пару, напр. /price BTCUSDT")
     market = context.args[0].upper()
-    if not ensure_market_exists(market):
-        return await update.message.reply_text("Некоректний ринок.")
-    p = price_of(market)
-    if p is None:
-        return await update.message.reply_text("Ціну не отримано.")
-    await update.message.reply_text(f"{market}: {p}")
+    p = await wb_get_price(market)
+    if not p:
+        return await update.message.reply_text("Не вдалося отримати ціну.")
+    await update.message.reply_text(f"Ціна {market}: {p}")
 
-async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    b = get_balance()
-    await update.message.reply_text(f"Баланс: {json.dumps(b, ensure_ascii=False)}")
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    b = await wb_get_balance()
+    if not b:
+        return await update.message.reply_text("Не вдалося отримати баланс.")
+    text = "\n".join([f"{k}: {v}" for k,v in b.items()])
+    await update.message.reply_text(f"Баланс:\n{text}")
 
-def get_or_create_cfg(market: str) -> dict:
-    return State["markets"].setdefault(market, {"amount": 0.0, "tp": 0.5, "sl": 0.3, "position": 0.0, "entry": 0.0})
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 3:
+        return await update.message.reply_text("Формат: /buy BTCUSDT 0.1 65000")
+    market, amount, price = context.args[0].upper(), float(context.args[1]), float(context.args[2])
+    res = await wb_place_order(market, "buy", amount, price)
+    await update.message.reply_text(f"Buy result: {res}")
 
-async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        return await update.message.reply_text("Синтаксис: /market DOGE_USDT")
-    market = context.args[0].upper()
-    if not ensure_market_exists(market):
-        return await update.message.reply_text("Некоректний ринок.")
-    get_or_create_cfg(market)
-    await update.message.reply_text(f"Додано {market}")
-
-async def cmd_removemarket(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        return await update.message.reply_text("Синтаксис: /removemarket DOGE_USDT")
-    market = context.args[0].upper()
-    State["markets"].pop(market, None)
-    await update.message.reply_text(f"Видалено {market}")
-
-async def cmd_setamount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 2:
-        return await update.message.reply_text("Синтаксис: /setamount DOGE_USDT 5")
-    market = context.args[0].upper()
-    try:
-        amount = float(context.args[1])
-    except Exception:
-        return await update.message.reply_text("Некоректна сума.")
-    cfg = get_or_create_cfg(market)
-    cfg["amount"] = max(0.0, amount)
-    await update.message.reply_text(f"Сума для {market}: {cfg['amount']}")
-
-async def cmd_settp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 2:
-        return await update.message.reply_text("Синтаксис: /settp DOGE_USDT 0.5")
-    m = context.args[0].upper()
-    try:
-        v = float(context.args[1])
-    except Exception:
-        return await update.message.reply_text("Некоректне значення.")
-    cfg = get_or_create_cfg(m)
-    cfg["tp"] = max(0.0, v)
-    await update.message.reply_text(f"TP для {m}: {cfg['tp']}%")
-
-async def cmd_setsl(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 2:
-        return await update.message.reply_text("Синтаксис: /setsl DOGE_USDT 0.3")
-    m = context.args[0].upper()
-    try:
-        v = float(context.args[1])
-    except Exception:
-        return await update.message.reply_text("Некоректне значення.")
-    cfg = get_or_create_cfg(m)
-    cfg["sl"] = max(0.0, v)
-    await update.message.reply_text(f"SL для {m}: {cfg['sl']}%")
-
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(status_text())
-
-async def cmd_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        return await update.message.reply_text("Синтаксис: /auto on|off")
-    val = context.args[0].lower()
-    if val not in {"on","off"}:
-        return await update.message.reply_text("Вкажіть on або off")
-    State["auto"] = (val == "on")
-    await update.message.reply_text(f"Автоторгівля: {'увімкнена' if State['auto'] else 'вимкнена'}")
-
-async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    State["auto"] = False
-    await update.message.reply_text("Зупинено автоторгівлю.")
-
-async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Перезапуск...")
-    os._exit(0)
-
-async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        return await update.message.reply_text("Синтаксис: /buy DOGE_USDT [сума]")
-    m = context.args[0].upper()
-    cfg = get_or_create_cfg(m)
-    amount = float(context.args[1]) if len(context.args) > 1 else float(cfg.get("amount", 0.0))
-    if amount <= 0:
-        return await update.message.reply_text("Не задана сума.")
-    r = place_market_order(m, "buy", amount)
-    if "dry_run" in r:
-        # оновлюємо уявну позицію
-        p = price_of(m) or 0.0
-        q = amount / p if p > 0 else 0.0
-        cfg["position"] += q
-        cfg["entry"] = p
-    await update.message.reply_text(f"BUY {m}: {json.dumps(r, ensure_ascii=False)}")
-
-async def cmd_sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        return await update.message.reply_text("Синтаксис: /sell DOGE_USDT [сума]")
-    m = context.args[0].upper()
-    cfg = get_or_create_cfg(m)
-    amount = float(context.args[1]) if len(context.args) > 1 else float(cfg.get("amount", 0.0))
-    if amount <= 0:
-        return await update.message.reply_text("Не задана сума.")
-    r = place_market_order(m, "sell", amount)
-    if "dry_run" in r:
-        p = price_of(m) or 0.0
-        q = amount / p if p > 0 else 0.0
-        cfg["position"] = max(0.0, cfg.get("position", 0.0) - q)
-        cfg["entry"] = 0.0 if cfg["position"] == 0.0 else cfg["entry"]
-    await update.message.reply_text(f"SELL {m}: {json.dumps(r, ensure_ascii=False)}")
+async def sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 3:
+        return await update.message.reply_text("Формат: /sell BTCUSDT 0.1 67000")
+    market, amount, price = context.args[0].upper(), float(context.args[1]), float(context.args[2])
+    res = await wb_place_order(market, "sell", amount, price)
+    await update.message.reply_text(f"Sell result: {res}")
 
 # ---------- Автоторгівля ----------
-
-async def trade_job(context: ContextTypes.DEFAULT_TYPE):
-    if not State["auto"] or not State["markets"]:
+async def auto_job(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    uid = job.chat_id
+    state = user_state.get(uid, {})
+    market, amount, tp, sl, entry = (
+        state.get("market"), state.get("amount"), state.get("tp"), state.get("sl"), state.get("entry")
+    )
+    if not all([market, amount, tp, sl, entry]):
         return
-    bot = context.bot
-    chat_id = context.job.chat_id if context.job else None
+    price = await wb_get_price(market)
+    if not price:
+        return
+    if price >= entry * (1 + tp/100):
+        res = await wb_place_order(market, "sell", amount, price)
+        await context.bot.send_message(uid, f"TP досягнуто: {res}")
+        job.schedule_removal()
+    elif price <= entry * (1 - sl/100):
+        res = await wb_place_order(market, "sell", amount, price)
+        await context.bot.send_message(uid, f"SL спрацював: {res}")
+        job.schedule_removal()
 
-    for m, cfg in list(State["markets"].items()):
-        try:
-            p = price_of(m)
-            if p is None:
-                continue
-            # якщо позиції немає — купуємо на amount
-            if cfg.get("position", 0.0) <= 0.0:
-                amt = float(cfg.get("amount", 0.0))
-                if amt > 0:
-                    r = place_market_order(m, "buy", amt)
-                    if "dry_run" in r:
-                        qty = amt / p if p > 0 else 0.0
-                        cfg["position"] = qty
-                        cfg["entry"] = p
-                    if chat_id:
-                        await bot.send_message(chat_id, f"АВТО: купівля {m} на {amt}. Ціна {p}.")
-                continue
+async def auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_chat.id
+    state = user_state.setdefault(uid, {})
+    if not all(k in state for k in ("market","amount","tp","sl")):
+        return await update.message.reply_text("Спочатку задай /market, /setamount, /settp, /setsl")
+    state["entry"] = await wb_get_price(state["market"])
+    context.job_queue.run_repeating(auto_job, interval=60, first=5, chat_id=uid)
+    await update.message.reply_text("Автоторгівля запущена.")
 
-            entry = float(cfg.get("entry", 0.0)) or p
-            tp = float(cfg.get("tp", 0.5))
-            sl = float(cfg.get("sl", 0.3))
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    jobs = context.job_queue.get_jobs_by_chat_id(update.effective_chat.id)
+    for j in jobs: j.schedule_removal()
+    await update.message.reply_text("Автоторгівлю зупинено.")
 
-            # Умови TP / SL
-            if p >= entry * (1 + tp/100.0):
-                amt = float(cfg.get("amount", 0.0))
-                r = place_market_order(m, "sell", amt)
-                if "dry_run" in r:
-                    cfg["position"] = 0.0
-                    cfg["entry"] = 0.0
-                if chat_id:
-                    await bot.send_message(chat_id, f"АВТО: TP виконано {m}. Продаж на {amt} за ціною {p}.")
-            elif p <= entry * (1 - sl/100.0):
-                amt = float(cfg.get("amount", 0.0))
-                r = place_market_order(m, "sell", amt)
-                if "dry_run" in r:
-                    cfg["position"] = 0.0
-                    cfg["entry"] = 0.0
-                if chat_id:
-                    await bot.send_message(chat_id, f"АВТО: SL спрацював {m}. Продаж на {amt} за ціною {p}.")
-        except Exception as e:
-            log.warning("trade loop error for %s: %s", m, e)
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await stop(update, context)
+    await auto(update, context)
 
-async def hourly_report(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.job.chat_id if context.job else None
-    txt = ["Щогодинний звіт:", status_text()]
-    if chat_id:
-        await context.bot.send_message(chat_id, "\n".join(txt))
+# ---------- Параметри ----------
+async def market_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        return await update.message.reply_text("Формат: /market BTCUSDT")
+    uid = update.effective_chat.id
+    user_state.setdefault(uid, {})["market"] = context.args[0].upper()
+    await update.message.reply_text(f"Ринок {context.args[0].upper()} встановлено.")
 
-# ---------- Ініціалізація ----------
+async def removemarket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_chat.id
+    user_state.get(uid, {}).pop("market", None)
+    await update.message.reply_text("Ринок прибрано.")
 
-async def _post_init(app: Application):
-    try:
-        await app.bot.delete_webhook(drop_pending_updates=True)
-        log.info("Webhook видалено, стартуємо polling")
-    except Exception as e:
-        log.warning("Не вдалося видалити webhook: %s", e)
+async def setamount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        return await update.message.reply_text("Формат: /setamount 0.1")
+    uid = update.effective_chat.id
+    user_state.setdefault(uid, {})["amount"] = float(context.args[0])
+    await update.message.reply_text(f"Обсяг {context.args[0]} збережено.")
 
-def register_handlers(app: Application):
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("price", cmd_price))
-    app.add_handler(CommandHandler("balance", cmd_balance))
-    app.add_handler(CommandHandler("buy", cmd_buy))
-    app.add_handler(CommandHandler("sell", cmd_sell))
-    app.add_handler(CommandHandler("setamount", cmd_setamount))
-    app.add_handler(CommandHandler("market", cmd_market))
-    app.add_handler(CommandHandler("removemarket", cmd_removemarket))
-    app.add_handler(CommandHandler("settp", cmd_settp))
-    app.add_handler(CommandHandler("setsl", cmd_setsl))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("auto", cmd_auto))
-    app.add_handler(CommandHandler("stop", cmd_stop))
-    app.add_handler(CommandHandler("restart", cmd_restart))
+async def settp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_chat.id
+    user_state.setdefault(uid, {})["tp"] = float(context.args[0])
+    await update.message.reply_text(f"TP {context.args[0]}% збережено.")
 
+async def setsl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_chat.id
+    user_state.setdefault(uid, {})["sl"] = float(context.args[0])
+    await update.message.reply_text(f"SL {context.args[0]}% збережено.")
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = user_state.get(update.effective_chat.id, {})
+    await update.message.reply_text(f"Статус: {state}")
+
+# ---------- Main ----------
 async def main():
-    app = Application.builder().token(BOT_TOKEN).post_init(_post_init).build()
-    register_handlers(app)
+    global session
+    session = aiohttp.ClientSession()
+    try:
+        app = Application.builder().token(BOT_TOKEN).build()
+        await app.bot.delete_webhook(drop_pending_updates=True)
 
-    # Автолоопи через JobQueue (без ручного EventLoop)
-    # Примітка: щоб отримувати звіти/логіку в особистий чат — один раз надішліть будь-яку команду боту.
-    app.job_queue.run_repeating(trade_job, interval=30, first=5, name="trade")  # раз на 30 сек
-    app.job_queue.run_repeating(hourly_report, interval=3600, first=300, name="report")
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("help", help_cmd))
+        app.add_handler(CommandHandler("price", price))
+        app.add_handler(CommandHandler("balance", balance))
+        app.add_handler(CommandHandler("buy", buy))
+        app.add_handler(CommandHandler("sell", sell))
+        app.add_handler(CommandHandler("market", market_cmd))
+        app.add_handler(CommandHandler("removemarket", removemarket))
+        app.add_handler(CommandHandler("setamount", setamount))
+        app.add_handler(CommandHandler("settp", settp))
+        app.add_handler(CommandHandler("setsl", setsl))
+        app.add_handler(CommandHandler("status", status))
+        app.add_handler(CommandHandler("auto", auto))
+        app.add_handler(CommandHandler("stop", stop))
+        app.add_handler(CommandHandler("restart", restart))
 
-    await app.run_polling(close_loop=False, allowed_updates=Update.ALL_TYPES)
+        await app.run_polling()
+    finally:
+        await session.close()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except RuntimeError:
-        # Якщо середовище вже має активний loop (деякі PaaS), fallback:
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(main())
+    asyncio.run(main())
