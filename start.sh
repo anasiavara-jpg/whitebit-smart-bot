@@ -1,3 +1,3 @@
 #!/bin/bash
-set -e
-python3 main.py
+pip install -r requirements.txt
+python main.py
