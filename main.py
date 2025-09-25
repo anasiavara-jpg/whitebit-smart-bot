@@ -311,4 +311,10 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        print("✅ main.py started")
+        asyncio.run(main())
+    except Exception as e:
+        import traceback
+        print("❌ Bot crashed with error:")
+        traceback.print_exc()
