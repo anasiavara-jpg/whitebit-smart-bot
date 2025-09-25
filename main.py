@@ -9,13 +9,19 @@ from telegram.ext import (
     Application, CommandHandler, ContextTypes
 )
 
+# ==============================
+# 🔑 Keys from environment
+# ==============================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WHITEBIT_API_KEY = os.getenv("API_PUBLIC_KEY")
-WHITEBIT_API_SECRET = os.getenv("API_SECRET_KEY").encode()
+WHITEBIT_API_SECRET = os.getenv("API_SECRET_KEY", "").encode()
 TRADING_ENABLED = os.getenv("TRADING_ENABLED", "false").lower() == "true"
 
 API_URL = "https://whitebit.com/api/v4"
 
+# ==============================
+# ⚙️ User state
+# ==============================
 user_state = {
     "market": None,
     "amount": None,
@@ -24,7 +30,9 @@ user_state = {
     "auto": False,
 }
 
-# WhiteBIT API
+# ==============================
+# 🌐 WhiteBIT API
+# ==============================
 async def wb_request(endpoint, method="GET", params=None, private=False):
     url = f"{API_URL}{endpoint}"
     headers = {}
@@ -69,7 +77,9 @@ async def wb_place_order(market: str, side: str, amount: float, price: float):
     }
     return await wb_request(endpoint, method="POST", params=params, private=True)
 
-# Commands
+# ==============================
+# 🤖 Bot commands
+# ==============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 Привіт! Це WhiteBIT бот. Використовуй /help для команд.")
 
@@ -149,9 +159,12 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏹ Автоторгівля зупинена")
 
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔄 Перезапуск...")
     os._exit(1)
 
-# Main
+# ==============================
+# 🚀 Main
+# ==============================
 async def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
