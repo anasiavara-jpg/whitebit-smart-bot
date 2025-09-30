@@ -266,11 +266,11 @@ async def balance_cmd(message: types.Message):
         return
     text = "💰 Баланс:\n"
     for asset, info in data.items():
-    try:
+        try:
         available = float(info["available"])
-    except:
+        except:
         available = 0
-    if available > 0:
+        if available > 0:
         text += f"{asset}: {available}\n"
 
 @dp.message(Command("market"))
