@@ -7,8 +7,6 @@ import hashlib
 import httpx
 import json
 
-print("✅ main.py started...")
-
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
@@ -21,17 +19,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("API_SECRET")
 
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 logging.basicConfig(level=logging.INFO)
 
 BASE_URL = "https://whitebit.com/api/v4"
 MARKETS_FILE = "markets.json"
-
 markets = {}
 
 # ---------------- JSON SAVE/LOAD ----------------
@@ -53,15 +47,15 @@ def load_markets():
             markets = {}
     else:
         markets = {}
-        save_markets()  # створюємо порожній файл при першому запуску
+        save_markets()
 
-# ---------------- HELPERS ----------------
+# ---------------- API HELPERS ----------------
 async def signed_request(endpoint: str, body: dict = None) -> dict:
     if body is None:
         body = {}
     body["request"] = endpoint
     body["nonce"] = int(time.time() * 1000)
-    payload = str(body).replace("'", '"').encode()
+    payload = json.dumps(body).encode()
 
     sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
 
@@ -133,7 +127,7 @@ async def market_cmd(message: types.Message):
     try:
         _, market = message.text.split()
         market = market.upper().replace("/", "_")
-        markets[market] = {"tp": None, "sl": None, "orders": [], "autotrade": False, "buy_usdt": 10}
+        markets[market] = {"tp": None, "sl": None, "orders": [], "autotrade": False, "buy_usdt": 10, "chat_id": message.chat.id}
         save_markets()
         await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
     except:
