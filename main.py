@@ -327,7 +327,7 @@ async def main():
     await asyncio.sleep(2)   # невелика пауза
     await dp.start_polling(bot, skip_updates=True)
 
-if __name__ "__main__":
+if __name__=="__main__":
     import asyncio
     print("✅ main.py started")
     asyncio.run(main())
