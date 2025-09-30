@@ -79,17 +79,32 @@ async def public_request(endpoint: str) -> dict:
         
 # ---------------- BALANCE ----------------
 async def get_balance():
-    data = await signed_request("/funds")
-    balances = {}
-    try:
-        for asset in data:
-            balances[asset["currency"]] = {
-                "available": float(asset.get("available", 0)),
-                "reserved": float(asset.get("reserved", 0))
-            }
-    except Exception as e:
-        logging.error(f"Помилка при парсингу балансу: {e}")
-    return balances
+    endpoint = "/trade-account/balance"
+    body = {
+        "request": endpoint,
+        "nonce": int(time.time() * 1000)
+    }
+    payload = json.dumps(body, separators=(',', ':')).encode()
+    sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-TXC-APIKEY": API_KEY,
+        "X-TXC-SIGNATURE": sign
+    }
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(BASE_URL + endpoint, json=body, headers=headers)
+        try:
+            data = r.json()
+            if isinstance(data, dict):
+                return data
+            else:
+                logging.error(f"Неправильна відповідь від API: {data}")
+                return {}
+        except Exception:
+            logging.error(f"Помилка відповіді API: {r.text}")
+            return {}
 
 # ---------------- BOT COMMANDS ----------------
 @dp.message(Command("start"))
