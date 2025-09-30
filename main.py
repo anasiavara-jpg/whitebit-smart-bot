@@ -81,7 +81,7 @@ async def public_request(endpoint: str) -> dict:
 async def get_balance():
     endpoint = "/trade-account/balance"
     body = {
-        "request": endpoint,
+        "request": "/api/v4"+endpoint,
         "nonce": int(time.time() * 1000)
     }
     payload = json.dumps(body, separators=(',', ':')).encode()
