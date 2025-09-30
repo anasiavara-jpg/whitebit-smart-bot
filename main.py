@@ -76,6 +76,10 @@ async def public_request(endpoint: str) -> dict:
     async with httpx.AsyncClient() as client:
         r = await client.get(BASE_URL + endpoint)
         return r.json()
+        
+# ---------------- BALANCE ----------------
+async def get_balance():
+    return await signed_request("/funds")
 
 async def cancel_order(order_id: int):
     return await signed_request("/order/cancel", {"order_id": order_id})
@@ -111,7 +115,7 @@ async def help_cmd(message: types.Message):
 
 @dp.message(Command("balance"))
 async def balance_cmd(message: types.Message):
-    data = await signed_request("/profile/balance")
+    data = await get_balance()
     if "error" in data:
         await message.answer(f"❌ Помилка: {data['error']}")
         return
@@ -198,7 +202,7 @@ async def place_limit_order(market: str, side: str, price: float, amount: float)
     return await signed_request("/order/new", body)
 
 async def start_new_trade(market: str, cfg: dict):
-    balances = await signed_request("/profile/balance")
+    balances = await get_balance()
     usdt = float(balances.get("USDT", {}).get("available", 0))
     spend = cfg.get("buy_usdt", 10)
     if usdt < spend:
