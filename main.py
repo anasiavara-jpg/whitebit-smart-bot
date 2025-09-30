@@ -24,7 +24,7 @@ dp = Dispatcher()
 
 logging.basicConfig(level=logging.INFO)
 
-BASE_URL = "https://whitebit.com/api/v4"
+BASE_URL = "https://whitebit.net/api/v4"
 MARKETS_FILE = "markets.json"
 markets = {}
 
