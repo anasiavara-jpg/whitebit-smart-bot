@@ -363,10 +363,7 @@ async def start_new_trade(market: str, cfg: dict):
     if base_amount <= 0:
         logging.error(f"Нульовий обсяг базової монети: spend={spend}, price={last_price}")
         return
-
-    if base_amount <= 0:
-        logging.error(f"Нульовий обсяг базової монети: spend={spend}, price={last_price}")
-        return
+        
     buy_res = await place_market_order(market, "buy", base_amount)
     if "error" in buy_res:
         logging.error(f"Помилка купівлі: {buy_res}")
