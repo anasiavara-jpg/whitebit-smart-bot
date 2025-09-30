@@ -357,13 +357,11 @@ try:
     last_price = float(ticker.get(market, {}).get("last_price"))
 except Exception:
     logging.error(f"Не вдалося отримати last_price для {market}: {ticker}")
-    return
-
+        return
     base_amount = round(spend / last_price, 8)
     if base_amount <= 0:
         logging.error(f"Нульовий обсяг базової монети: spend={spend}, price={last_price}")
         return
-
     buy_res = await place_market_order(market, "buy", base_amount)
     if "error" in buy_res:
         logging.error(f"Помилка купівлі: {buy_res}")
