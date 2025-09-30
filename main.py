@@ -306,16 +306,17 @@ async def monitor_orders():
 # ---------------- RUN ----------------
 async def main():
     load_markets()
-    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.delete_webhook(drop_pending_updates=True)  # видаляємо вебхук щоб не було конфліктів
     asyncio.create_task(monitor_orders())
     print("🚀 Bot is running and waiting for commands...")
     await dp.start_polling(bot)
 
+
 if __name__ == "__main__":
+    import sys
     try:
         print("✅ main.py started")
         asyncio.run(main())
-    except Exception as e:
-        import traceback
-        print("❌ Bot crashed with error:")
-        traceback.print_exc()
+    except (KeyboardInterrupt, SystemExit):
+        print("❌ Bot stopped")
+        sys.exit()
