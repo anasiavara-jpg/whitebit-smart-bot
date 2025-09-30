@@ -24,7 +24,7 @@ dp = Dispatcher()
 
 logging.basicConfig(level=logging.INFO)
 
-BASE_URL = "https://whitebit.net/api/v4"
+BASE_URL = "https://whitebit.com/api/v4"
 MARKETS_FILE = "markets.json"
 markets = {}
 
@@ -102,28 +102,31 @@ async def private_post(endpoint: str, payload: dict | None = None) -> dict:
 # ---------------- BALANCE ----------------
 async def get_balance():
     endpoint = "/trade-account/balance"
+    body = {
+        "request": "/api/v4" + endpoint,
+        "nonce": int(time.time() * 1000)
+    }
+    payload = json.dumps(body, separators=(',', ':')).encode()
+    sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
     headers = {
         "Content-Type": "application/json",
         "X-TXC-APIKEY": API_KEY,
+        "X-TXC-SIGNATURE": sign
     }
-
     async with httpx.AsyncClient() as client:
-        r = await client.get(BASE_URL + endpoint, headers=headers, timeout=30)
+        r = await client.post(BASE_URL + endpoint, json=body, headers=headers, timeout=30)
 
     try:
         data = r.json()
-        if isinstance(data, dict):
-            logging.info(f"DEBUG balance: {data}")  # тимчасово, щоб бачити структуру
-            return data
-        logging.error(f"Неправильна відповідь від API: {data}")
-        return {}
+        logging.info(f"DEBUG balance: {data}")
+        return data if isinstance(data, dict) else {}
     except Exception:
         logging.error(f"Помилка відповіді API: {r.text}")
         return {}
-
+        
 # ---------------- ORDERS ----------------
 async def place_market_order(market: str, side: str, amount: float) -> dict:
-    endpoint = "/trade-account/order"
+    endpoint = "/order/market"
     body = {
         "request": endpoint,
         "nonce": int(time.time() * 1000),
@@ -151,7 +154,7 @@ async def place_market_order(market: str, side: str, amount: float) -> dict:
 
 
 async def place_limit_order(market: str, side: str, price: float, amount: float) -> dict:
-    endpoint = "/trade-account/order"
+    endpoint = "/order/new"
     body = {
         "request": endpoint,
         "nonce": int(time.time() * 1000),
@@ -349,12 +352,12 @@ async def start_new_trade(market: str, cfg: dict):
         logging.warning(f"Недостатньо USDT для {market}. Є {usdt}, треба {spend}.")
         return
         
-    ticker = await public_request(f"/public/ticker/{market}")
-    try:
-        last_price = float(ticker.get("last_price"))
-    except Exception:
-        logging.error(f"Не вдалося отримати last_price для {market}: {ticker}")
-        return
+    ticker = await public_request("/public/ticker")
+try:
+    last_price = float(ticker.get(market, {}).get("last_price"))
+except Exception:
+    logging.error(f"Не вдалося отримати last_price для {market}: {ticker}")
+    return
 
     base_amount = round(spend / last_price, 8)
     if base_amount <= 0:
