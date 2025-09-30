@@ -352,13 +352,18 @@ async def start_new_trade(market: str, cfg: dict):
         logging.warning(f"Недостатньо USDT для {market}. Є {usdt}, треба {spend}.")
         return
         
-    ticker = await public_request("/public/ticker")
-try:
-    last_price = float(ticker.get(market, {}).get("last_price"))
-except Exception:
-    logging.error(f"Не вдалося отримати last_price для {market}: {ticker}")
+        ticker = await public_request("/public/ticker")
+    try:
+        last_price = float(ticker.get(market, {}).get("last_price"))
+    except Exception:
+        logging.error(f"Не вдалося отримати last_price для {market}: {ticker}")
         return
+
     base_amount = round(spend / last_price, 8)
+    if base_amount <= 0:
+        logging.error(f"Нульовий обсяг базової монети: spend={spend}, price={last_price}")
+        return
+
     if base_amount <= 0:
         logging.error(f"Нульовий обсяг базової монети: spend={spend}, price={last_price}")
         return
