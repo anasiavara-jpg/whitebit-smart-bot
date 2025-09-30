@@ -102,19 +102,14 @@ async def private_post(endpoint: str, payload: dict | None = None) -> dict:
 # ---------------- BALANCE ----------------
 async def get_balance():
     endpoint = "/trade-account/balance"
-    body = {
-        "request": "/api/v4" + endpoint,
-        "nonce": int(time.time() * 1000)
-    }
-    payload = json.dumps(body, separators=(',', ':')).encode()
-    sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
     headers = {
         "Content-Type": "application/json",
         "X-TXC-APIKEY": API_KEY,
-        "X-TXC-SIGNATURE": sign
     }
+
     async with httpx.AsyncClient() as client:
-        r = await client.post(BASE_URL + endpoint, json=body, headers=headers, timeout=30)
+        r = await client.get(BASE_URL + endpoint, headers=headers, timeout=30)
+
     try:
         data = r.json()
         if isinstance(data, dict):
