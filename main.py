@@ -79,13 +79,17 @@ async def public_request(endpoint: str) -> dict:
         
 # ---------------- BALANCE ----------------
 async def get_balance():
-    return await signed_request("/funds")
-
-async def cancel_order(order_id: int):
-    return await signed_request("/order/cancel", {"order_id": order_id})
-
-async def order_status(order_id: int):
-    return await signed_request("/order/status", {"order_id": order_id})
+    data = await signed_request("/funds")
+    balances = {}
+    try:
+        for asset in data:
+            balances[asset["currency"]] = {
+                "available": float(asset.get("available", 0)),
+                "reserved": float(asset.get("reserved", 0))
+            }
+    except Exception as e:
+        logging.error(f"Помилка при парсингу балансу: {e}")
+    return balances
 
 # ---------------- BOT COMMANDS ----------------
 @dp.message(Command("start"))
@@ -116,14 +120,13 @@ async def help_cmd(message: types.Message):
 @dp.message(Command("balance"))
 async def balance_cmd(message: types.Message):
     data = await get_balance()
-    if "error" in data:
-        await message.answer(f"❌ Помилка: {data['error']}")
+    if not data:
+        await message.answer("❌ Помилка: не вдалося отримати баланс.")
         return
     text = "💰 Баланс:\n"
     for asset, info in data.items():
-        available = info.get("available", "0")
-        if float(available) > 0:
-            text += f"{asset}: {available}\n"
+        if info["available"] > 0:
+            text += f"{asset}: {info['available']}\n"
     await message.answer(text)
 
 @dp.message(Command("market"))
@@ -193,37 +196,37 @@ async def autotrade_cmd(message: types.Message):
         await message.answer("⚠️ Використання: /autotrade BTC/USDT on|off")
 
 # ------------------- TRADE -------------------
-async def place_market_order(market: str, side: str, amount: float):
-    body = {"market": market, "side": side, "amount": str(amount), "type": "market"}
-    return await signed_request("/order/new", body)
-
-async def place_limit_order(market: str, side: str, price: float, amount: float):
-    body = {"market": market, "side": side, "amount": str(amount), "price": str(price), "type": "limit"}
-    return await signed_request("/order/new", body)
-
 async def start_new_trade(market: str, cfg: dict):
     balances = await get_balance()
-    usdt = float(balances.get("USDT", {}).get("available", 0))
+    usdt = balances.get("USDT", {}).get("available", 0)
+
     spend = cfg.get("buy_usdt", 10)
     if usdt < spend:
         logging.warning(f"Недостатньо USDT для {market}.")
         return
+
     buy_res = await place_market_order(market, "buy", spend)
     if "error" in buy_res:
         logging.error(f"Помилка купівлі: {buy_res}")
         return
+
     ticker = await public_request(f"/public/ticker/{market}")
     last_price = float(ticker.get("last_price", 0))
     amount = float(buy_res.get("amount", 0))
     cfg["orders"] = []
+
     if cfg["tp"]:
         tp_price = last_price * (1 + cfg["tp"] / 100)
         tp_order = await place_limit_order(market, "sell", tp_price, amount)
-        if "id" in tp_order: cfg["orders"].append(tp_order["id"])
+        if "id" in tp_order:
+            cfg["orders"].append(tp_order["id"])
+
     if cfg["sl"]:
         sl_price = last_price * (1 - cfg["sl"] / 100)
         sl_order = await place_limit_order(market, "sell", sl_price, amount)
-        if "id" in sl_order: cfg["orders"].append(sl_order["id"])
+        if "id" in sl_order:
+            cfg["orders"].append(sl_order["id"])
+
     save_markets()
 
 @dp.message(Command("buy"))
