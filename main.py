@@ -76,14 +76,68 @@ async def public_request(endpoint: str) -> dict:
     async with httpx.AsyncClient() as client:
         r = await client.get(BASE_URL + endpoint)
         return r.json()
+
+async def private_post(endpoint: str, payload: dict | None = None) -> dict:
+    if payload is None:
+        payload = {}
+    body = {
+        "request": "/api/v4" + endpoint,
+        "nonce": int(time.time() * 1000),
+        **payload,
+    }
+    payload_bytes = json.dumps(body, separators=(',', ':')).encode()
+    sign = hmac.new(API_SECRET.encode(), payload_bytes, hashlib.sha512).hexdigest()
+    headers = {
+        "Content-Type": "application/json",
+        "X-TXC-APIKEY": API_KEY,
+        "X-TXC-SIGNATURE": sign
+    }
+    async with httpx.AsyncClient() as client:
+        r = await client.post(BASE_URL + endpoint, json=body, headers=headers, timeout=30)
+        try:
+            return r.json()
+        except Exception:
+            return {"error": r.text}
         
 # ---------------- BALANCE ----------------
 async def get_balance():
     endpoint = "/trade-account/balance"
     body = {
-        "request": "/api/v4"+endpoint,
+        "request": "/api/v4" + endpoint,
         "nonce": int(time.time() * 1000)
     }
+    payload = json.dumps(body, separators=(',', ':')).encode()
+    sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
+    headers = {
+        "Content-Type": "application/json",
+        "X-TXC-APIKEY": API_KEY,
+        "X-TXC-SIGNATURE": sign
+    }
+    async with httpx.AsyncClient() as client:
+        r = await client.post(BASE_URL + endpoint, json=body, headers=headers, timeout=30)
+    try:
+        data = r.json()
+        if isinstance(data, dict):
+            logging.info(f"DEBUG balance: {data}")  # тимчасово, щоб бачити структуру
+            return data
+        logging.error(f"Неправильна відповідь від API: {data}")
+        return {}
+    except Exception:
+        logging.error(f"Помилка відповіді API: {r.text}")
+        return {}
+
+# ---------------- ORDERS ----------------
+async def place_market_order(market: str, side: str, amount: float) -> dict:
+    endpoint = "/trade-account/order"
+    body = {
+        "request": endpoint,
+        "nonce": int(time.time() * 1000),
+        "market": market,
+        "side": side,           # "buy" або "sell"
+        "amount": str(amount),  # кількість у базовій валюті
+        "type": "market"
+    }
+
     payload = json.dumps(body, separators=(',', ':')).encode()
     sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
 
@@ -96,15 +150,87 @@ async def get_balance():
     async with httpx.AsyncClient() as client:
         r = await client.post(BASE_URL + endpoint, json=body, headers=headers)
         try:
-            data = r.json()
-            if isinstance(data, dict):
-                return data
-            else:
-                logging.error(f"Неправильна відповідь від API: {data}")
-                return {}
+            return r.json()
         except Exception:
-            logging.error(f"Помилка відповіді API: {r.text}")
-            return {}
+            return {"error": r.text}
+
+
+async def place_limit_order(market: str, side: str, price: float, amount: float) -> dict:
+    endpoint = "/trade-account/order"
+    body = {
+        "request": endpoint,
+        "nonce": int(time.time() * 1000),
+        "market": market,
+        "side": side,
+        "amount": str(amount),
+        "price": str(price),
+        "type": "limit"
+    }
+
+    payload = json.dumps(body, separators=(',', ':')).encode()
+    sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-TXC-APIKEY": API_KEY,
+        "X-TXC-SIGNATURE": sign
+    }
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(BASE_URL + endpoint, json=body, headers=headers)
+        try:
+            return r.json()
+        except Exception:
+            return {"error": r.text}
+
+
+async def order_status(order_id: int) -> dict:
+    endpoint = "/trade-account/order"
+    body = {
+        "request": endpoint,
+        "nonce": int(time.time() * 1000),
+        "orderId": order_id
+    }
+
+    payload = json.dumps(body, separators=(',', ':')).encode()
+    sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-TXC-APIKEY": API_KEY,
+        "X-TXC-SIGNATURE": sign
+    }
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(BASE_URL + endpoint, json=body, headers=headers)
+        try:
+            return r.json()
+        except Exception:
+            return {"error": r.text}
+
+async def cancel_order(order_id: int) -> dict:
+    endpoint = "/trade-account/order/cancel"
+    body = {
+        "request": endpoint,
+        "nonce": int(time.time() * 1000),
+        "orderId": order_id
+    }
+
+    payload = json.dumps(body, separators=(',', ':')).encode()
+    sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-TXC-APIKEY": API_KEY,
+        "X-TXC-SIGNATURE": sign
+    }
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(BASE_URL + endpoint, json=body, headers=headers)
+        try:
+            return r.json()
+        except Exception:
+            return {"error": r.text}
 
 # ---------------- BOT COMMANDS ----------------
 @dp.message(Command("start"))
@@ -140,9 +266,12 @@ async def balance_cmd(message: types.Message):
         return
     text = "💰 Баланс:\n"
     for asset, info in data.items():
-        if info["available"] > 0:
-            text += f"{asset}: {info['available']}\n"
-    await message.answer(text)
+    try:
+        available = float(info["available"])
+    except:
+        available = 0
+    if available > 0:
+        text += f"{asset}: {available}\n"
 
 @dp.message(Command("market"))
 async def market_cmd(message: types.Message):
@@ -213,33 +342,46 @@ async def autotrade_cmd(message: types.Message):
 # ------------------- TRADE -------------------
 async def start_new_trade(market: str, cfg: dict):
     balances = await get_balance()
-    usdt = balances.get("USDT", {}).get("available", 0)
+    usdt_av = balances.get("USDT", {}).get("available", 0)
 
-    spend = cfg.get("buy_usdt", 10)
+    try:
+        usdt = float(usdt_av)
+    except Exception:
+        usdt = 0.0
+
+    spend = float(cfg.get("buy_usdt", 10))
     if usdt < spend:
-        logging.warning(f"Недостатньо USDT для {market}.")
+        logging.warning(f"Недостатньо USDT для {market}. Є {usdt}, треба {spend}.")
+        return
+        
+    ticker = await public_request(f"/public/ticker/{market}")
+    try:
+        last_price = float(ticker.get("last_price"))
+    except Exception:
+        logging.error(f"Не вдалося отримати last_price для {market}: {ticker}")
         return
 
-    buy_res = await place_market_order(market, "buy", spend)
+    base_amount = round(spend / last_price, 8)
+    if base_amount <= 0:
+        logging.error(f"Нульовий обсяг базової монети: spend={spend}, price={last_price}")
+        return
+
+    buy_res = await place_market_order(market, "buy", base_amount)
     if "error" in buy_res:
         logging.error(f"Помилка купівлі: {buy_res}")
         return
 
-    ticker = await public_request(f"/public/ticker/{market}")
-    last_price = float(ticker.get("last_price", 0))
-    amount = float(buy_res.get("amount", 0))
     cfg["orders"] = []
-
-    if cfg["tp"]:
-        tp_price = last_price * (1 + cfg["tp"] / 100)
-        tp_order = await place_limit_order(market, "sell", tp_price, amount)
-        if "id" in tp_order:
+    if cfg.get("tp"):
+        tp_price = round(last_price * (1 + float(cfg["tp"]) / 100), 6)
+        tp_order = await place_limit_order(market, "sell", tp_price, base_amount)
+        if isinstance(tp_order, dict) and "id" in tp_order:
             cfg["orders"].append(tp_order["id"])
 
-    if cfg["sl"]:
-        sl_price = last_price * (1 - cfg["sl"] / 100)
-        sl_order = await place_limit_order(market, "sell", sl_price, amount)
-        if "id" in sl_order:
+    if cfg.get("sl"):
+        sl_price = round(last_price * (1 - float(cfg["sl"]) / 100), 6)
+        sl_order = await place_limit_order(market, "sell", sl_price, base_amount)
+        if isinstance(sl_order, dict) and "id" in sl_order:
             cfg["orders"].append(sl_order["id"])
 
     save_markets()
