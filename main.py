@@ -354,8 +354,8 @@ async def start_new_trade(market: str, cfg: dict):
     if usdt < spend:
         logging.warning(f"Недостатньо USDT для {market}. Є {usdt}, треба {spend}.")
         return
-        
-        ticker = await public_request("/public/ticker")
+    
+    ticker = await public_request("/public/ticker")
     try:
         last_price = float(ticker.get(market, {}).get("last_price"))
     except Exception:
@@ -462,15 +462,24 @@ async def monitor_orders():
         await asyncio.sleep(10)
 
 # ---------------- RUN ----------------
+monitor_task = None  
+
 async def main():
+    global monitor_task
     load_markets()
     await bot.delete_webhook(drop_pending_updates=True)
-    asyncio.create_task(monitor_orders())
+
+if monitor_task and not monitor_task.done():
+        monitor_task.cancel()
+    monitor_task = asyncio.create_task(monitor_orders())
 
     logging.info("🚀 Bot is running and waiting for commands...")
     await dp.start_polling(bot, skip_updates=True)
 
+
 if __name__ == "__main__":
-    import asyncio
     print("✅ main.py started")
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("⏹️ Bot stopped manually")
