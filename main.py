@@ -462,16 +462,17 @@ async def monitor_orders():
         await asyncio.sleep(10)
 
 # ---------------- RUN ----------------
-monitor_task = None  
+monitor_task = None
 
 async def main():
     global monitor_task
     load_markets()
     await bot.delete_webhook(drop_pending_updates=True)
 
-if monitor_task and not monitor_task.done():
+    if monitor_task and not monitor_task.done():
         monitor_task.cancel()
     monitor_task = asyncio.create_task(monitor_orders())
+    logging.info("📡 Monitor orders запущено")
 
     logging.info("🚀 Bot is running and waiting for commands...")
     await dp.start_polling(bot, skip_updates=True)
@@ -482,4 +483,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        print("⏹️ Bot stopped manually")
+        print("🛑 Bot stopped manually")
