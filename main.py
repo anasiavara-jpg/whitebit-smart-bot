@@ -103,7 +103,6 @@ async def private_post(endpoint: str, payload: dict | None = None) -> dict:
 async def get_balance():
     endpoint = "/trade-account/balance"
     body = {
-        "request": "/api/v4" + endpoint,
         "nonce": int(time.time() * 1000)
     }
     payload = json.dumps(body, separators=(',', ':')).encode()
@@ -115,7 +114,6 @@ async def get_balance():
     }
     async with httpx.AsyncClient() as client:
         r = await client.post(BASE_URL + endpoint, json=body, headers=headers, timeout=30)
-
     try:
         data = r.json()
         logging.info(f"DEBUG balance: {data}")
