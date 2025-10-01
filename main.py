@@ -105,15 +105,19 @@ async def get_balance():
     body = {
         "nonce": int(time.time() * 1000)
     }
+
     payload = json.dumps(body, separators=(',', ':')).encode()
     sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
+
     headers = {
         "Content-Type": "application/json",
         "X-TXC-APIKEY": API_KEY,
         "X-TXC-SIGNATURE": sign
     }
+
     async with httpx.AsyncClient() as client:
         r = await client.post(BASE_URL + endpoint, json=body, headers=headers, timeout=30)
+
     try:
         data = r.json()
         logging.info(f"DEBUG balance: {data}")
