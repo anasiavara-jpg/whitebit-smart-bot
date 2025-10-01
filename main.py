@@ -473,8 +473,3 @@ if __name__ == "__main__":
     import asyncio
     print("✅ main.py started")
     asyncio.run(main())
-
-if __name__=="__main__":
-    import asyncio
-    print("✅ main.py started")
-    asyncio.run(main())
