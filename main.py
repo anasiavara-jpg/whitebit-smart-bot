@@ -460,27 +460,21 @@ async def monitor_orders():
         except Exception as e:
             logging.error(f"Monitor error: {e}")
         await asyncio.sleep(10)
-
 # ---------------- RUN ----------------
-monitor_task = None
+async def on_startup(dispatcher):
+    asyncio.create_task(monitor_orders())
+    logging.info("📊 Monitor orders запущено")
 
 async def main():
-    global monitor_task
     load_markets()
     await bot.delete_webhook(drop_pending_updates=True)
-
-    if monitor_task and not monitor_task.done():
-        monitor_task.cancel()
-    monitor_task = asyncio.create_task(monitor_orders())
-    logging.info("📡 Monitor orders запущено")
-
     logging.info("🚀 Bot is running and waiting for commands...")
-    await dp.start_polling(bot, skip_updates=True)
 
+    await dp.start_polling(bot, skip_updates=True, on_startup=on_startup)
 
 if __name__ == "__main__":
-    print("✅ main.py started")
     try:
+        print("✅ main.py started")
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         print("🛑 Bot stopped manually")
