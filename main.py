@@ -102,8 +102,10 @@ async def private_post(endpoint: str, payload: dict | None = None) -> dict:
 # ---------------- BALANCE ----------------
 async def get_balance():
     endpoint = "/trade-account/balance"
+    full_request = "/api/v4" + endpoint  # ✅ ОБОВʼЯЗКОВО
+
     body = {
-        "request": endpoint,
+        "request": full_request,
         "nonce": int(time.time() * 1000)
     }
 
