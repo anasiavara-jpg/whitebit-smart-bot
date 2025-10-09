@@ -100,26 +100,33 @@ async def private_post(endpoint: str, payload: dict | None = None) -> dict:
             return {"error": r.text}
         
 # ---------------- BALANCE ----------------
+import base64
+
 async def get_balance():
     endpoint = "/trade-account/balance"
-    full_request = "/api/v4" + endpoint  # ✅ ОБОВʼЯЗКОВО
+    full_request = "/api/v4" + endpoint
 
     body = {
         "request": full_request,
         "nonce": int(time.time() * 1000)
     }
 
-    payload = json.dumps(body, separators=(',', ':')).encode()
-    sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
+    # 1. Перетворюємо body в JSON і Base64
+    json_payload = json.dumps(body, separators=(',', ':')).encode()
+    encoded_payload = base64.b64encode(json_payload).decode()
+
+    # 2. Створюємо підпис
+    signature = hmac.new(API_SECRET.encode(), encoded_payload.encode(), hashlib.sha512).hexdigest()
 
     headers = {
         "Content-Type": "application/json",
         "X-TXC-APIKEY": API_KEY,
-        "X-TXC-SIGNATURE": sign
+        "X-TXC-PAYLOAD": encoded_payload,   # ✅ Обовʼязковий заголовок
+        "X-TXC-SIGNATURE": signature
     }
 
     async with httpx.AsyncClient() as client:
-        r = await client.post(BASE_URL + endpoint, json=body, headers=headers, timeout=30)
+        r = await client.post(BASE_URL + endpoint, headers=headers, timeout=30)
 
     try:
         data = r.json()
