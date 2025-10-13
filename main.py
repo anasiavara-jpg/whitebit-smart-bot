@@ -1,16 +1,19 @@
+# main.py — WhiteBIT Smart Bot (clean)
 import asyncio
+import base64
+import hashlib
+import hmac
+import json
 import logging
 import os
-import hmac
 import time
-import hashlib
-import httpx
-import json
+from typing import Dict, Any
 
+import httpx
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.filters import Command
 from dotenv import load_dotenv
 
 # ---------------- CONFIG ----------------
@@ -19,14 +22,17 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("API_SECRET")
 
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
+if not (BOT_TOKEN and API_KEY and API_SECRET):
+    raise RuntimeError("BOT_TOKEN / API_KEY / API_SECRET must be set in environment")
 
 logging.basicConfig(level=logging.INFO)
 
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
+
 BASE_URL = "https://whitebit.com/api/v4"
 MARKETS_FILE = "markets.json"
-markets = {}
+markets: Dict[str, Dict[str, Any]] = {}
 
 # ---------------- JSON SAVE/LOAD ----------------
 def save_markets():
@@ -49,183 +55,78 @@ def load_markets():
         markets = {}
         save_markets()
 
-# ---------------- API HELPERS ----------------
-async def signed_request(endpoint: str, body: dict = None) -> dict:
-    if body is None:
-        body = {}
-    body["request"] = endpoint
-    body["nonce"] = int(time.time() * 1000)
-    payload = json.dumps(body).encode()
-
-    sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-TXC-APIKEY": API_KEY,
-        "X-TXC-SIGNATURE": sign
-    }
-
-    async with httpx.AsyncClient() as client:
-        r = await client.post(BASE_URL + endpoint, json=body, headers=headers)
-        try:
-            return r.json()
-        except Exception:
-            return {"error": r.text}
-
+# ---------------- HTTP HELPERS ----------------
 async def public_request(endpoint: str) -> dict:
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(BASE_URL + endpoint)
         return r.json()
 
-async def private_post(endpoint: str, payload: dict | None = None) -> dict:
-    if payload is None:
-        payload = {}
+def make_headers(endpoint: str, extra_body: dict | None = None) -> dict:
+    """
+    Готує Base64 payload і підпис HMAC SHA512 для приватних ендпоінтів WhiteBIT.
+    """
+    if extra_body is None:
+        extra_body = {}
     body = {
         "request": "/api/v4" + endpoint,
         "nonce": int(time.time() * 1000),
-        **payload,
-    }
-    payload_bytes = json.dumps(body, separators=(',', ':')).encode()
-    sign = hmac.new(API_SECRET.encode(), payload_bytes, hashlib.sha512).hexdigest()
-    headers = {
-        "Content-Type": "application/json",
-        "X-TXC-APIKEY": API_KEY,
-        "X-TXC-SIGNATURE": sign
-    }
-    async with httpx.AsyncClient() as client:
-        r = await client.post(BASE_URL + endpoint, json=body, headers=headers, timeout=30)
-        try:
-            return r.json()
-        except Exception:
-            return {"error": r.text}
-        
-# ---------------- BALANCE ----------------
-import base64
-
-async def get_balance():
-    endpoint = "/trade-account/balance"
-    full_request = "/api/v4" + endpoint
-
-    body = {
-        "request": full_request,
-        "nonce": int(time.time() * 1000)
-    }
-
-    # 1. Перетворюємо body в JSON і Base64
-    json_payload = json.dumps(body, separators=(',', ':')).encode()
-    encoded_payload = base64.b64encode(json_payload).decode()
-
-    # 2. Створюємо підпис
-    signature = hmac.new(API_SECRET.encode(), encoded_payload.encode(), hashlib.sha512).hexdigest()
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-TXC-APIKEY": API_KEY,
-        "X-TXC-PAYLOAD": encoded_payload,   # ✅ Обовʼязковий заголовок
-        "X-TXC-SIGNATURE": signature
-    }
-
-    async with httpx.AsyncClient() as client:
-        r = await client.post(BASE_URL + endpoint, headers=headers, timeout=30)
-
-    try:
-        data = r.json()
-        logging.info(f"DEBUG balance: {data}")
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        logging.error(f"Помилка відповіді API: {r.text}")
-        return {}
-        
-# ---------------- ORDERS ----------------
-import base64
-
-def make_headers(endpoint: str, extra_body: dict | None = None):
-    if extra_body is None:
-        extra_body = {}
-    full_request = "/api/v4" + endpoint
-    body = {
-        "request": full_request,
-        "nonce": int(time.time() * 1000),
         **extra_body
     }
-    json_payload = json.dumps(body, separators=(',', ':')).encode()
+    json_payload = json.dumps(body, separators=(",", ":")).encode()
     encoded_payload = base64.b64encode(json_payload).decode()
     signature = hmac.new(API_SECRET.encode(), encoded_payload.encode(), hashlib.sha512).hexdigest()
-
     return {
         "Content-Type": "application/json",
         "X-TXC-APIKEY": API_KEY,
         "X-TXC-PAYLOAD": encoded_payload,
-        "X-TXC-SIGNATURE": signature
+        "X-TXC-SIGNATURE": signature,
     }
 
-# 📌 Ринковий ордер
-async def place_market_order(market: str, side: str, amount: float) -> dict:
-    endpoint = "/order/market"
-    body = {
-        "market": market,
-        "side": side,
-        "amount": str(amount),
-        "type": "market"
-    }
-    headers = make_headers(endpoint, body)
-
-    async with httpx.AsyncClient() as client:
+async def private_post(endpoint: str, extra_body: dict | None = None) -> dict:
+    headers = make_headers(endpoint, extra_body)
+    async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(BASE_URL + endpoint, headers=headers)
-    try:
-        return r.json()
-    except Exception:
-        return {"error": r.text}
+        try:
+            return r.json()
+        except Exception:
+            return {"error": r.text}
 
-# 📌 Лімітний ордер
+# ---------------- WHITEBIT API ----------------
+async def get_balance() -> dict:
+    data = await private_post("/trade-account/balance")
+    logging.info(f"DEBUG balance: {data}")
+    return data if isinstance(data, dict) else {}
+
+async def place_market_order(market: str, side: str, amount: float) -> dict:
+    return await private_post("/order/market", {
+        "market": market,
+        "side": side,                # "buy" | "sell"
+        "amount": str(amount),
+        "type": "market",
+    })
+
 async def place_limit_order(market: str, side: str, price: float, amount: float) -> dict:
-    endpoint = "/order/new"
-    body = {
+    return await private_post("/order/new", {
         "market": market,
         "side": side,
         "amount": str(amount),
         "price": str(price),
-        "type": "limit"
-    }
-    headers = make_headers(endpoint, body)
+        "type": "limit",
+    })
 
-    async with httpx.AsyncClient() as client:
-        r = await client.post(BASE_URL + endpoint, headers=headers)
-    try:
-        return r.json()
-    except Exception:
-        return {"error": r.text}
-
-# 📌 Статус ордера
 async def order_status(order_id: int) -> dict:
-    endpoint = "/trade-account/order"
-    body = {"orderId": order_id}
-    headers = make_headers(endpoint, body)
+    return await private_post("/trade-account/order", {"orderId": order_id})
 
-    async with httpx.AsyncClient() as client:
-        r = await client.post(BASE_URL + endpoint, headers=headers)
-    try:
-        return r.json()
-    except Exception:
-        return {"error": r.text}
-
-# 📌 Скасування ордера
 async def cancel_order(order_id: int) -> dict:
-    endpoint = "/trade-account/order/cancel"
-    body = {"orderId": order_id}
-    headers = make_headers(endpoint, body)
+    return await private_post("/trade-account/order/cancel", {"orderId": order_id})
 
-    async with httpx.AsyncClient() as client:
-        r = await client.post(BASE_URL + endpoint, headers=headers)
-    try:
-        return r.json()
-    except Exception:
-        return {"error": r.text}
-        
 # ---------------- BOT COMMANDS ----------------
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
-    await message.answer("👋 Привіт! Я трейдинг-бот для WhiteBIT.\nВикористай /help щоб подивитись список команд.")
+    await message.answer(
+        "👋 Привіт! Я трейдинг-бот для WhiteBIT.\n"
+        "Використай /help щоб подивитись список команд."
+    )
 
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
@@ -254,24 +155,36 @@ async def balance_cmd(message: types.Message):
     if not data:
         await message.answer("❌ Помилка: не вдалося отримати баланс.")
         return
-    text = "💰 Баланс:\n"
-    for asset, info in data.items():
+
+    lines = []
+    for asset, info in sorted(data.items()):
         try:
-            available = float(info["available"])
-        except:
-            available = 0
-        if available > 0:
-            text += f"{asset}: {available}\n"
+            available = float(info.get("available", 0))
+            freeze = float(info.get("freeze", 0))
+        except Exception:
+            available, freeze = 0.0, 0.0
+        if available > 0 or freeze > 0:
+            lines.append(f"{asset}: {available} (freeze {freeze})")
+
+    text = "💰 <b>Баланс</b>:\n" + ("\n".join(lines) if lines else "0 на всіх гаманцях")
+    await message.answer(text)
 
 @dp.message(Command("market"))
 async def market_cmd(message: types.Message):
     try:
         _, market = message.text.split()
-        market = market.upper().replace("/", "_")
-        markets[market] = {"tp": None, "sl": None, "orders": [], "autotrade": False, "buy_usdt": 10, "chat_id": message.chat.id}
+        market = market.upper().replace("/", "_")  # BTC/USDT -> BTC_USDT
+        markets[market] = {
+            "tp": None,
+            "sl": None,
+            "orders": [],
+            "autotrade": False,
+            "buy_usdt": 10,
+            "chat_id": message.chat.id,
+        }
         save_markets()
         await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
-    except:
+    except Exception:
         await message.answer("⚠️ Використання: /market BTC/USDT")
 
 @dp.message(Command("settp"))
@@ -282,7 +195,7 @@ async def settp_cmd(message: types.Message):
         markets[market]["tp"] = float(percent)
         save_markets()
         await message.answer(f"📈 TP для {market}: {percent}%")
-    except:
+    except Exception:
         await message.answer("⚠️ Використання: /settp BTC/USDT 5")
 
 @dp.message(Command("setsl"))
@@ -293,7 +206,7 @@ async def setsl_cmd(message: types.Message):
         markets[market]["sl"] = float(percent)
         save_markets()
         await message.answer(f"📉 SL для {market}: {percent}%")
-    except:
+    except Exception:
         await message.answer("⚠️ Використання: /setsl BTC/USDT 2")
 
 @dp.message(Command("setbuy"))
@@ -308,7 +221,7 @@ async def setbuy_cmd(message: types.Message):
         markets[market]["buy_usdt"] = usdt
         save_markets()
         await message.answer(f"📊 Для {market} встановлено {usdt} USDT на кожну купівлю.")
-    except:
+    except Exception:
         await message.answer("⚠️ Використання: /setbuy BTC/USDT 30")
 
 @dp.message(Command("autotrade"))
@@ -326,14 +239,14 @@ async def autotrade_cmd(message: types.Message):
             await message.answer(f"⏹️ Автотрейд для {market} вимкнено.")
         else:
             await message.answer("⚠️ Використання: /autotrade BTC/USDT on|off")
-    except:
+    except Exception:
         await message.answer("⚠️ Використання: /autotrade BTC/USDT on|off")
 
-# ------------------- TRADE -------------------
+# ---------------- TRADE LOGIC ----------------
 async def start_new_trade(market: str, cfg: dict):
+    # 1) Баланс
     balances = await get_balance()
     usdt_av = balances.get("USDT", {}).get("available", 0)
-
     try:
         usdt = float(usdt_av)
     except Exception:
@@ -343,7 +256,8 @@ async def start_new_trade(market: str, cfg: dict):
     if usdt < spend:
         logging.warning(f"Недостатньо USDT для {market}. Є {usdt}, треба {spend}.")
         return
-    
+
+    # 2) Поточна ціна
     ticker = await public_request("/public/ticker")
     try:
         last_price = float(ticker.get(market, {}).get("last_price"))
@@ -351,16 +265,20 @@ async def start_new_trade(market: str, cfg: dict):
         logging.error(f"Не вдалося отримати last_price для {market}: {ticker}")
         return
 
+    # 3) Розрахунок кількості
     base_amount = round(spend / last_price, 8)
     if base_amount <= 0:
         logging.error(f"Нульовий обсяг базової монети: spend={spend}, price={last_price}")
         return
-        
+
+    # 4) Купівля
     buy_res = await place_market_order(market, "buy", base_amount)
     if "error" in buy_res:
         logging.error(f"Помилка купівлі: {buy_res}")
         return
+    logging.info(f"BUY placed: {buy_res}")
 
+    # 5) TP/SL
     cfg["orders"] = []
     if cfg.get("tp"):
         tp_price = round(last_price * (1 + float(cfg["tp"]) / 100), 6)
@@ -386,21 +304,26 @@ async def buy_cmd(message: types.Message):
             return
         await start_new_trade(market, markets[market])
         await message.answer(f"✅ Купівля {market} виконана на {markets[market]['buy_usdt']} USDT.")
-    except:
+    except Exception:
         await message.answer("⚠️ Використання: /buy BTC/USDT")
 
-# ------------------- STATUS -------------------
 @dp.message(Command("status"))
 async def status_cmd(message: types.Message):
     if not markets:
         await message.answer("ℹ️ Активних ринків немає.")
         return
-    text = "📊 Статус:\n"
+    text = "📊 <b>Статус</b>:\n"
     for m, cfg in markets.items():
-        text += f"\n{m}:\n TP: {cfg['tp']}%\n SL: {cfg['sl']}%\n Buy: {cfg['buy_usdt']} USDT\n Автотрейд: {cfg['autotrade']}\n Ордерів: {len(cfg['orders'])}\n"
+        text += (
+            f"\n{m}:\n"
+            f" TP: {cfg['tp']}%\n"
+            f" SL: {cfg['sl']}%\n"
+            f" Buy: {cfg['buy_usdt']} USDT\n"
+            f" Автотрейд: {cfg['autotrade']}\n"
+            f" Ордерів: {len(cfg['orders'])}\n"
+        )
     await message.answer(text)
 
-# ------------------- OTHER -------------------
 @dp.message(Command("removemarket"))
 async def removemarket_cmd(message: types.Message):
     try:
@@ -412,7 +335,7 @@ async def removemarket_cmd(message: types.Message):
             await message.answer(f"🗑️ Видалено {market}")
         else:
             await message.answer("❌ Ринок не знайдено.")
-    except:
+    except Exception:
         await message.answer("⚠️ Використання: /removemarket BTC/USDT")
 
 @dp.message(Command("stop"))
@@ -428,37 +351,45 @@ async def restart_cmd(message: types.Message):
     save_markets()
     await message.answer("🔄 Логіку перезапущено.")
 
-# ------------------- MONITOR -------------------
+# ---------------- MONITOR ----------------
 async def monitor_orders():
     while True:
         try:
             for market, cfg in list(markets.items()):
                 for order_id in list(cfg["orders"]):
-                    status = await order_status(order_id)
-                    if status.get("status") == "closed":
-                        await bot.send_message(chat_id=cfg.get("chat_id", 0) or 0,
-                                               text=f"✅ Ордер {order_id} ({market}) виконано!")
-                        for oid in cfg["orders"]:
+                    st = await order_status(order_id)
+                    if st.get("status") == "closed":
+                        await bot.send_message(
+                            chat_id=cfg.get("chat_id", 0) or 0,
+                            text=f"✅ Ордер {order_id} ({market}) виконано!"
+                        )
+                        # Скасувати інші ордери (дзеркальний OCO)
+                        for oid in list(cfg["orders"]):
                             if oid != order_id:
                                 await cancel_order(oid)
                         cfg["orders"].clear()
+                        save_markets()
+                        # Автотрейд — нова угода
                         if cfg.get("autotrade"):
-                            await bot.send_message(chat_id=cfg.get("chat_id", 0) or 0,
-                                                   text=f"♻️ Автотрейд {market}: нова угода на {cfg['buy_usdt']} USDT")
+                            await bot.send_message(
+                                chat_id=cfg.get("chat_id", 0) or 0,
+                                text=f"♻️ Автотрейд {market}: нова угода на {cfg['buy_usdt']} USDT"
+                            )
                             await start_new_trade(market, cfg)
         except Exception as e:
             logging.error(f"Monitor error: {e}")
         await asyncio.sleep(10)
+
 # ---------------- RUN ----------------
 async def on_startup(dispatcher):
+    # важливо для уникнення TelegramConflictError
+    await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(monitor_orders())
     logging.info("📊 Monitor orders запущено")
 
 async def main():
     load_markets()
-    await bot.delete_webhook(drop_pending_updates=True)
     logging.info("🚀 Bot is running and waiting for commands...")
-
     await dp.start_polling(bot, skip_updates=True, on_startup=on_startup)
 
 if __name__ == "__main__":
