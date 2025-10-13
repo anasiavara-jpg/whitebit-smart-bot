@@ -137,111 +137,91 @@ async def get_balance():
         return {}
         
 # ---------------- ORDERS ----------------
+import base64
+
+def make_headers(endpoint: str, extra_body: dict | None = None):
+    if extra_body is None:
+        extra_body = {}
+    full_request = "/api/v4" + endpoint
+    body = {
+        "request": full_request,
+        "nonce": int(time.time() * 1000),
+        **extra_body
+    }
+    json_payload = json.dumps(body, separators=(',', ':')).encode()
+    encoded_payload = base64.b64encode(json_payload).decode()
+    signature = hmac.new(API_SECRET.encode(), encoded_payload.encode(), hashlib.sha512).hexdigest()
+
+    return {
+        "Content-Type": "application/json",
+        "X-TXC-APIKEY": API_KEY,
+        "X-TXC-PAYLOAD": encoded_payload,
+        "X-TXC-SIGNATURE": signature
+    }
+
+# 📌 Ринковий ордер
 async def place_market_order(market: str, side: str, amount: float) -> dict:
     endpoint = "/order/market"
     body = {
-        "request": endpoint,
-        "nonce": int(time.time() * 1000),
         "market": market,
-        "side": side,           # "buy" або "sell"
-        "amount": str(amount),  # кількість у базовій валюті
+        "side": side,
+        "amount": str(amount),
         "type": "market"
     }
-
-    payload = json.dumps(body, separators=(',', ':')).encode()
-    sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-TXC-APIKEY": API_KEY,
-        "X-TXC-SIGNATURE": sign
-    }
+    headers = make_headers(endpoint, body)
 
     async with httpx.AsyncClient() as client:
-        r = await client.post(BASE_URL + endpoint, json=body, headers=headers)
-        try:
-            return r.json()
-        except Exception:
-            return {"error": r.text}
+        r = await client.post(BASE_URL + endpoint, headers=headers)
+    try:
+        return r.json()
+    except Exception:
+        return {"error": r.text}
 
-
+# 📌 Лімітний ордер
 async def place_limit_order(market: str, side: str, price: float, amount: float) -> dict:
     endpoint = "/order/new"
     body = {
-        "request": endpoint,
-        "nonce": int(time.time() * 1000),
         "market": market,
         "side": side,
         "amount": str(amount),
         "price": str(price),
         "type": "limit"
     }
-
-    payload = json.dumps(body, separators=(',', ':')).encode()
-    sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-TXC-APIKEY": API_KEY,
-        "X-TXC-SIGNATURE": sign
-    }
+    headers = make_headers(endpoint, body)
 
     async with httpx.AsyncClient() as client:
-        r = await client.post(BASE_URL + endpoint, json=body, headers=headers)
-        try:
-            return r.json()
-        except Exception:
-            return {"error": r.text}
+        r = await client.post(BASE_URL + endpoint, headers=headers)
+    try:
+        return r.json()
+    except Exception:
+        return {"error": r.text}
 
-
+# 📌 Статус ордера
 async def order_status(order_id: int) -> dict:
     endpoint = "/trade-account/order"
-    body = {
-        "request": endpoint,
-        "nonce": int(time.time() * 1000),
-        "orderId": order_id
-    }
-
-    payload = json.dumps(body, separators=(',', ':')).encode()
-    sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-TXC-APIKEY": API_KEY,
-        "X-TXC-SIGNATURE": sign
-    }
+    body = {"orderId": order_id}
+    headers = make_headers(endpoint, body)
 
     async with httpx.AsyncClient() as client:
-        r = await client.post(BASE_URL + endpoint, json=body, headers=headers)
-        try:
-            return r.json()
-        except Exception:
-            return {"error": r.text}
+        r = await client.post(BASE_URL + endpoint, headers=headers)
+    try:
+        return r.json()
+    except Exception:
+        return {"error": r.text}
 
+# 📌 Скасування ордера
 async def cancel_order(order_id: int) -> dict:
     endpoint = "/trade-account/order/cancel"
-    body = {
-        "request": endpoint,
-        "nonce": int(time.time() * 1000),
-        "orderId": order_id
-    }
-
-    payload = json.dumps(body, separators=(',', ':')).encode()
-    sign = hmac.new(API_SECRET.encode(), payload, hashlib.sha512).hexdigest()
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-TXC-APIKEY": API_KEY,
-        "X-TXC-SIGNATURE": sign
-    }
+    body = {"orderId": order_id}
+    headers = make_headers(endpoint, body)
 
     async with httpx.AsyncClient() as client:
-        r = await client.post(BASE_URL + endpoint, json=body, headers=headers)
-        try:
-            return r.json()
-        except Exception:
-            return {"error": r.text}
-
+        r = await client.post(BASE_URL + endpoint, headers=headers)
+    try:
+        return r.json()
+    except Exception:
+        return {"error": r.text}
+        
 # ---------------- BOT COMMANDS ----------------
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
