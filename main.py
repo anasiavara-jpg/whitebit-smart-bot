@@ -390,6 +390,7 @@ async def on_startup(dispatcher):
 async def main():
     load_markets()
     logging.info("🚀 Bot is running and waiting for commands...")
+    await asyncio.sleep(3)
     await dp.start_polling(bot, skip_updates=True, on_startup=on_startup)
 
 if __name__ == "__main__":
