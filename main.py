@@ -16,6 +16,13 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from dotenv import load_dotenv
 
+_nonce = int(time.time() * 1000)
+
+def get_nonce():
+    global _nonce
+    _nonce += 1
+    return _nonce
+
 # ---------------- CONFIG ----------------
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -69,7 +76,7 @@ def make_headers(endpoint: str, extra_body: dict | None = None) -> dict:
         extra_body = {}
     body = {
         "request": "/api/v4" + endpoint,
-        "nonce": int(time.time() * 1000),
+        "nonce": get_nonce(),
         **extra_body
     }
     json_payload = json.dumps(body, separators=(",", ":")).encode()
@@ -94,6 +101,7 @@ async def private_post(endpoint: str, extra_body: dict | None = None) -> dict:
 # ---------------- WHITEBIT API ----------------
 async def get_balance() -> dict:
     data = await private_post("/trade-account/balance")
+    print("🟡 RAW WhiteBIT balance response:", data)  # 👉 додаємо вивід у лог
     logging.info(f"DEBUG balance: {data}")
     return data if isinstance(data, dict) else {}
 
