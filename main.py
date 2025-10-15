@@ -389,17 +389,23 @@ async def monitor_orders():
         await asyncio.sleep(10)
 
 # ---------------- RUN ----------------
-async def on_startup(dispatcher):
-    # важливо для уникнення TelegramConflictError
-    await bot.delete_webhook(drop_pending_updates=True)
-    asyncio.create_task(monitor_orders())
-    logging.info("📊 Monitor orders запущено")
-
 async def main():
     load_markets()
     logging.info("🚀 Bot is running and waiting for commands...")
-    await asyncio.sleep(3)
-    await dp.start_polling(bot, skip_updates=True, on_startup=on_startup)
+
+    # ✅ Видаляємо старий webhook і pending updates перед polling
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logging.info("✅ Webhook очищено успішно")
+    except Exception as e:
+        logging.error(f"❌ Помилка очищення webhook: {e}")
+
+    # ✅ Запускаємо монітор ордерів
+    asyncio.create_task(monitor_orders())
+
+    # ✅ Старт polling без on_startup
+    await dp.start_polling(bot, skip_updates=True)
+
 
 if __name__ == "__main__":
     try:
