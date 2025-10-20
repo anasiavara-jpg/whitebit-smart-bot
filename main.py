@@ -62,7 +62,7 @@ def load_markets():
         markets = {}
         save_markets()
 
-# ---------------- HTTP HELPERS ----------------
+# ---------------- HTTP HELPERS (WHITEBIT v4) ----------------
 async def public_request(endpoint: str) -> dict:
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(BASE_URL + endpoint)
@@ -70,25 +70,28 @@ async def public_request(endpoint: str) -> dict:
 
 def make_headers(endpoint: str, extra_body: dict | None = None) -> dict:
     """
-    Готує HMAC SHA512 підпис для приватних ендпоінтів WhiteBIT (без Base64).
+    Коректний підпис для WhiteBIT v4:
+    - payload = ЧИСТИЙ JSON-рядок (без base64)
+    - signature = HMAC-SHA512(payload, API_SECRET)
+    - у payload ОБОВʼЯЗКОВО є "request" і "nonce"
     """
     if extra_body is None:
         extra_body = {}
+
     body = {
-        "request": "/api/v4" + endpoint,
-        "nonce": get_nonce(),
+        "request": "/api/v4" + endpoint,  # <- повний шлях
+        "nonce": get_nonce(),             # <- зростаючий nonce
         **extra_body
     }
 
-    # JSON без пробілів
     payload = json.dumps(body, separators=(",", ":"))
     signature = hmac.new(API_SECRET.encode(), payload.encode(), hashlib.sha512).hexdigest()
 
     return {
         "Content-Type": "application/json",
         "X-TXC-APIKEY": API_KEY,
-        "X-TXC-PAYLOAD": payload,
-        "X-TXC-SIGNATURE": signature,
+        "X-TXC-PAYLOAD": payload,      # <- чистий JSON
+        "X-TXC-SIGNATURE": signature,  # <- hex HMAC SHA512
     }
 
 async def private_post(endpoint: str, extra_body: dict | None = None) -> dict:
