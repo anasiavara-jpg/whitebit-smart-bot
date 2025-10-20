@@ -70,7 +70,7 @@ async def public_request(endpoint: str) -> dict:
 
 def make_headers(endpoint: str, extra_body: dict | None = None) -> dict:
     """
-    Готує Base64 payload і підпис HMAC SHA512 для приватних ендпоінтів WhiteBIT.
+    Готує HMAC SHA512 підпис для приватних ендпоінтів WhiteBIT (без Base64).
     """
     if extra_body is None:
         extra_body = {}
@@ -79,13 +79,15 @@ def make_headers(endpoint: str, extra_body: dict | None = None) -> dict:
         "nonce": get_nonce(),
         **extra_body
     }
-    json_payload = json.dumps(body, separators=(",", ":")).encode()
-    encoded_payload = base64.b64encode(json_payload).decode()
-    signature = hmac.new(API_SECRET.encode(), encoded_payload.encode(), hashlib.sha512).hexdigest()
+
+    # JSON без пробілів
+    payload = json.dumps(body, separators=(",", ":"))
+    signature = hmac.new(API_SECRET.encode(), payload.encode(), hashlib.sha512).hexdigest()
+
     return {
         "Content-Type": "application/json",
         "X-TXC-APIKEY": API_KEY,
-        "X-TXC-PAYLOAD": encoded_payload,
+        "X-TXC-PAYLOAD": payload,
         "X-TXC-SIGNATURE": signature,
     }
 
@@ -96,6 +98,7 @@ async def private_post(endpoint: str, extra_body: dict | None = None) -> dict:
         try:
             return r.json()
         except Exception:
+            logging.error(f"Помилка декодування відповіді: {r.text}")
             return {"error": r.text}
 
 # ---------------- WHITEBIT API ----------------
