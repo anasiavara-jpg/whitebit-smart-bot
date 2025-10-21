@@ -71,13 +71,15 @@ async def public_request(endpoint: str) -> dict:
 def make_headers(endpoint: str, extra_body: dict | None = None) -> tuple[dict, str]:
     """
     Формує headers і payload для WhiteBIT v4.
+    Якщо запит не має тіла — nonce додається тільки для підпису.
     """
-    if extra_body is None:
-        extra_body = {}
-
-    body = {"nonce": get_nonce(), **extra_body}
+    if extra_body:
+        body = {"nonce": get_nonce(), **extra_body}
+    else:
+        body = {}  # тіло порожнє
     payload = json.dumps(body, separators=(",", ":"))
-    signature = hmac.new(API_SECRET.encode(), payload.encode(), hashlib.sha512).hexdigest()
+    signature_base = payload if extra_body else json.dumps({"nonce": get_nonce()}, separators=(",", ":"))
+    signature = hmac.new(API_SECRET.encode(), signature_base.encode(), hashlib.sha512).hexdigest()
 
     headers = {
         "Content-Type": "application/json",
@@ -92,7 +94,9 @@ def make_headers(endpoint: str, extra_body: dict | None = None) -> tuple[dict, s
 async def private_post(endpoint: str, extra_body: dict | None = None) -> dict:
     headers, payload = make_headers(endpoint, extra_body)
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(BASE_URL + endpoint, headers=headers, content=payload)
+        # якщо тіло порожнє — відправляємо '{}', інакше — контент
+        body = payload if payload != "{}" else "{}"
+        r = await client.post(BASE_URL + endpoint, headers=headers, content=body)
         try:
             data = r.json()
         except Exception:
