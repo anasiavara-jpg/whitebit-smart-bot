@@ -88,15 +88,26 @@ def make_headers(endpoint: str, extra_body: dict | None = None) -> tuple[dict, s
 
 
 async def private_post(endpoint: str, extra_body: dict | None = None) -> dict:
-    headers, payload = make_headers(endpoint, extra_body)
+    if extra_body:
+        headers, payload = make_headers(endpoint, extra_body)
+        content = payload
+    else:
+        # ✅ для balance та подібних запитів — повністю пусте тіло
+        headers = {
+            "Content-Type": "application/json",
+            "X-TXC-APIKEY": API_KEY,
+            "X-TXC-PAYLOAD": "",
+            "X-TXC-SIGNATURE": hmac.new(API_SECRET.encode(), b"", hashlib.sha512).hexdigest(),
+        }
+        content = ""
+
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(BASE_URL + endpoint, headers=headers, content=payload)
+        r = await client.post(BASE_URL + endpoint, headers=headers, content=content)
         try:
-            data = r.json()
+            return r.json()
         except Exception:
             logging.error(f"Помилка декодування відповіді: {r.text}")
             return {"error": r.text}
-        return data
 # ---------------- WHITEBIT API ----------------
 async def get_balance() -> dict:
     data = await private_post("/trade-account/balance")
