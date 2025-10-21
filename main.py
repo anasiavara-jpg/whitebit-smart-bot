@@ -70,14 +70,15 @@ async def public_request(endpoint: str) -> dict:
 
 def make_headers(endpoint: str, extra_body: dict | None = None) -> tuple[dict, str]:
     """
-    ✅ Коректна реалізація для WhiteBIT API v4
-    Підпис формується як HMAC_SHA512(secret, nonce + endpoint + payload)
+    ✅ Коректна версія підпису для WhiteBIT v4 (2025)
+    Підпис: HMAC_SHA512(secret, nonce + url + payload)
     """
     nonce = str(get_nonce())
+    endpoint_clean = endpoint.lstrip("/")  # 👈 ВАЖЛИВО: без початкового "/"
     body = extra_body or {}
     payload = json.dumps(body, separators=(",", ":"))
 
-    signature_base = nonce + endpoint + payload
+    signature_base = nonce + endpoint_clean + payload
     signature = hmac.new(API_SECRET.encode(), signature_base.encode(), hashlib.sha512).hexdigest()
 
     headers = {
