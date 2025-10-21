@@ -70,17 +70,15 @@ async def public_request(endpoint: str) -> dict:
 
 def make_headers(endpoint: str, extra_body: dict | None = None) -> dict:
     """
-    Коректний підпис для WhiteBIT v4:
-    - payload = ЧИСТИЙ JSON-рядок (без base64)
+    Коректний підпис для WhiteBIT API v4:
+    - payload = чистий JSON без поля "request"
     - signature = HMAC-SHA512(payload, API_SECRET)
-    - у payload ОБОВʼЯЗКОВО є "request" і "nonce"
     """
     if extra_body is None:
         extra_body = {}
 
     body = {
-        "request": "/api/v4" + endpoint,  # <- повний шлях
-        "nonce": get_nonce(),             # <- зростаючий nonce
+        "nonce": get_nonce(),  # тільки nonce!
         **extra_body
     }
 
@@ -90,14 +88,15 @@ def make_headers(endpoint: str, extra_body: dict | None = None) -> dict:
     return {
         "Content-Type": "application/json",
         "X-TXC-APIKEY": API_KEY,
-        "X-TXC-PAYLOAD": payload,      # <- чистий JSON
-        "X-TXC-SIGNATURE": signature,  # <- hex HMAC SHA512
+        "X-TXC-PAYLOAD": payload,
+        "X-TXC-SIGNATURE": signature,
     }
 
 async def private_post(endpoint: str, extra_body: dict | None = None) -> dict:
     headers = make_headers(endpoint, extra_body)
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(BASE_URL + endpoint, headers=headers)
+        body = headers["X-TXC-PAYLOAD"]
+        r = await client.post(BASE_URL + endpoint, headers=headers, data=body)
         try:
             return r.json()
         except Exception:
