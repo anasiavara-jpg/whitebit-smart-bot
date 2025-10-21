@@ -70,11 +70,10 @@ async def public_request(endpoint: str) -> dict:
 
 def make_headers(endpoint: str, extra_body: dict | None = None) -> tuple[dict, str]:
     """
-    Формує headers і payload для WhiteBIT v4.
-    Якщо запит без параметрів — nonce все одно додається в тіло (але порожнє по суті).
+    Коректне формування headers і payload для WhiteBIT v4.
+    Єдиний nonce використовується одночасно в тілі та підписі.
     """
     body = {"nonce": get_nonce(), **(extra_body or {})}
-
     payload = json.dumps(body, separators=(",", ":"))
     signature = hmac.new(API_SECRET.encode(), payload.encode(), hashlib.sha512).hexdigest()
 
@@ -84,20 +83,17 @@ def make_headers(endpoint: str, extra_body: dict | None = None) -> tuple[dict, s
         "X-TXC-PAYLOAD": payload,
         "X-TXC-SIGNATURE": signature,
     }
-
     return headers, payload
-
 
 async def private_post(endpoint: str, extra_body: dict | None = None) -> dict:
     headers, payload = make_headers(endpoint, extra_body)
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(BASE_URL + endpoint, headers=headers, content=payload)
         try:
-            data = r.json()
+            return r.json()
         except Exception:
             logging.error(f"Помилка декодування відповіді: {r.text}")
             return {"error": r.text}
-        return data
 
 # ---------------- WHITEBIT API ----------------
 async def get_balance() -> dict:
