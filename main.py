@@ -70,44 +70,36 @@ async def public_request(endpoint: str) -> dict:
 
 def make_headers(endpoint: str, extra_body: dict | None = None) -> tuple[dict, str]:
     """
-    Фінальна стабільна версія для WhiteBIT API v4.
-    Використовується один спільний nonce у тілі та підписі.
+    ✅ Коректна реалізація для WhiteBIT API v4
+    Підпис формується як HMAC_SHA512(secret, nonce + endpoint + payload)
     """
-    nonce = get_nonce()
-    body = {"nonce": nonce, **(extra_body or {})}
+    nonce = str(get_nonce())
+    body = extra_body or {}
     payload = json.dumps(body, separators=(",", ":"))
-    signature = hmac.new(API_SECRET.encode(), payload.encode(), hashlib.sha512).hexdigest()
+
+    signature_base = nonce + endpoint + payload
+    signature = hmac.new(API_SECRET.encode(), signature_base.encode(), hashlib.sha512).hexdigest()
 
     headers = {
         "Content-Type": "application/json",
         "X-TXC-APIKEY": API_KEY,
         "X-TXC-PAYLOAD": payload,
         "X-TXC-SIGNATURE": signature,
+        "X-TXC-Nonce": nonce,
     }
     return headers, payload
 
 
 async def private_post(endpoint: str, extra_body: dict | None = None) -> dict:
-    if extra_body:
-        headers, payload = make_headers(endpoint, extra_body)
-        content = payload
-    else:
-        # ✅ для balance та подібних запитів — повністю пусте тіло
-        headers = {
-            "Content-Type": "application/json",
-            "X-TXC-APIKEY": API_KEY,
-            "X-TXC-PAYLOAD": "",
-            "X-TXC-SIGNATURE": hmac.new(API_SECRET.encode(), b"", hashlib.sha512).hexdigest(),
-        }
-        content = ""
-
+    headers, payload = make_headers(endpoint, extra_body)
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(BASE_URL + endpoint, headers=headers, content=content)
+        r = await client.post(BASE_URL + endpoint, headers=headers, content=payload)
         try:
             return r.json()
         except Exception:
             logging.error(f"Помилка декодування відповіді: {r.text}")
             return {"error": r.text}
+            
 # ---------------- WHITEBIT API ----------------
 async def get_balance() -> dict:
     data = await private_post("/trade-account/balance")
