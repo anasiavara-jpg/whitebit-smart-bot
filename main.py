@@ -68,46 +68,43 @@ async def public_request(endpoint: str) -> dict:
         r = await client.get(BASE_URL + endpoint)
         return r.json()
 
-def make_headers(endpoint: str, extra_body: dict | None = None) -> dict:
+def make_headers(endpoint: str, extra_body: dict | None = None) -> tuple[dict, str]:
     """
-    Коректний підпис для WhiteBIT API v4:
-    - payload = чистий JSON без поля "request"
-    - signature = HMAC-SHA512(payload, API_SECRET)
+    Формує headers і payload для WhiteBIT v4.
     """
     if extra_body is None:
         extra_body = {}
 
-    body = {
-        "nonce": get_nonce(),  # тільки nonce!
-        **extra_body
-    }
-
+    body = {"nonce": get_nonce(), **extra_body}
     payload = json.dumps(body, separators=(",", ":"))
     signature = hmac.new(API_SECRET.encode(), payload.encode(), hashlib.sha512).hexdigest()
 
-    return {
+    headers = {
         "Content-Type": "application/json",
         "X-TXC-APIKEY": API_KEY,
         "X-TXC-PAYLOAD": payload,
         "X-TXC-SIGNATURE": signature,
     }
 
+    return headers, payload
+
+
 async def private_post(endpoint: str, extra_body: dict | None = None) -> dict:
-    headers = make_headers(endpoint, extra_body)
+    headers, payload = make_headers(endpoint, extra_body)
     async with httpx.AsyncClient(timeout=30) as client:
-        body = headers["X-TXC-PAYLOAD"]
-        r = await client.post(BASE_URL + endpoint, headers=headers, data=body)
+        r = await client.post(BASE_URL + endpoint, headers=headers, content=payload)
         try:
-            return r.json()
+            data = r.json()
         except Exception:
             logging.error(f"Помилка декодування відповіді: {r.text}")
             return {"error": r.text}
+        return data
 
 # ---------------- WHITEBIT API ----------------
 async def get_balance() -> dict:
     data = await private_post("/trade-account/balance")
-    print("🟡 RAW WhiteBIT balance response:", data)  # 👉 додаємо вивід у лог
     logging.info(f"DEBUG balance: {data}")
+    print("🟡 RAW WhiteBIT balance response:", data)
     return data if isinstance(data, dict) else {}
 
 async def place_market_order(market: str, side: str, amount: float) -> dict:
