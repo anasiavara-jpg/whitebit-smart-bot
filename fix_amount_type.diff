@@ -1,0 +1,32 @@
+diff --git a/main.py b/main.py
+--- a/main.py
++++ b/main.py
+@@ -210,11 +210,11 @@
+ async def place_market_order(market: str, side: str, amount: float) -> dict:
+     # POST /api/v4/order/market
+-    return await private_post("/api/v4/order/market", {
+-        "market": market,           # "BTC_USDT"
+-        "side": side,               # "buy" | "sell"
+-        "amount": str(amount),      # у базовій валюті (BTC у BTC_USDT)
+-        "type": "market",
+-    })
++    return await private_post("/api/v4/order/market", {
++        "market": market,           # "BTC_USDT"
++        "side": side,               # "buy" | "sell"
++        "amount": amount,           # ← число, не рядок
++        "type": "market",
++    })
+ 
+ async def place_limit_order(market: str, side: str, price: float, amount: float,
+                             client_order_id: Optional[str] = None, post_only: Optional[bool] = None,
+@@ -224,8 +224,8 @@
+     body = {
+         "market": market,
+         "side": side,
+-        "amount": str(amount),
+-        "price": str(price),
++        "amount": amount,       # ← число
++        "price": price,         # ← число
+         "type": "limit",
+     }
+     if client_order_id:
