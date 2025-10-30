@@ -116,26 +116,22 @@ async def get_balance() -> dict:
     return data if isinstance(data, dict) else {}
 
 async def place_market_order(market: str, side: str, amount: float) -> dict:
-    # POST /api/v4/order/market
+    logging.info(f"[DEBUG] market={market} side={side} amount={amount} type={type(amount)}")
     return await private_post("/api/v4/order/market", {
-        "market": market,           # "BTC_USDT"
-        "side": side,               # "buy" | "sell"
-        "amount": amount,           # ← число, не str
+        "market": market,
+        "side": side,
+        "amount": amount,   # число, не str
         "type": "market",
     })
 
 async def place_limit_order(market: str, side: str, price: float, amount: float,
                             client_order_id: Optional[str] = None, post_only: Optional[bool] = None,
                             stp: Optional[str] = None) -> dict:
-    # POST /api/v4/order/new
-async def place_limit_order(market: str, side: str, price: float, amount: float,
-                            client_order_id: Optional[str] = None, post_only: Optional[bool] = None,
-                            stp: Optional[str] = None) -> dict:
     body = {
         "market": market,
         "side": side,
-        "amount": amount,   # ← число
-        "price": price,     # ← число
+        "amount": amount,   # число
+        "price": price,     # число
         "type": "limit",
     }
     if client_order_id:
@@ -143,7 +139,7 @@ async def place_limit_order(market: str, side: str, price: float, amount: float,
     if post_only is not None:
         body["postOnly"] = bool(post_only)
     if stp:
-        body["stp"] = st
+        body["stp"] = stp
     return await private_post("/api/v4/order/new", body)
 
 async def active_orders(market: Optional[str] = None) -> dict:
