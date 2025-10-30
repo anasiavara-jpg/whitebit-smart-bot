@@ -123,7 +123,6 @@ async def get_balance() -> dict:
     logging.info(f"DEBUG balance: {data}")
     return data if isinstance(data, dict) else {}
 
-# --- REPLACE your place_market_order with this ---
 async def place_market_order(market: str, side: str, amount: float) -> dict:
     """
     WhiteBIT v4:
@@ -136,9 +135,11 @@ async def place_market_order(market: str, side: str, amount: float) -> dict:
     else:
         body["amount"] = float(amount)
 
-    logging.info(f"[DEBUG] market={market} side={side} amount={body['amount']} ({'quote' if side=='buy' else 'base'})")
+    logging.info(
+        f"[DEBUG] market={market} side={side} amount={body['amount']} "
+        f"({'quote' if side.lower()=='buy' else 'base'})"
+    )
     return await private_post("/api/v4/order/market", body)
-    })
 
 async def place_limit_order(market: str, side: str, price: float, amount: float,
                             client_order_id: Optional[str] = None, post_only: Optional[bool] = None,
