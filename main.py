@@ -111,26 +111,32 @@ async def private_post(path: str, extra_body: Optional[dict] = None) -> dict:
             logging.error(f"WhiteBIT error: {data.get('message')}")
         return data
 
-# ---------------- MARKET RULES (symbols) ----------------
+# ---------------- MARKET RULES (fix: use /public/markets, fallback) ----------------
 async def load_market_rules():
     """
-    Тягнемо правила ринків і кешуємо прецизійність та (за наявності) мінімалки.
+    Завантажуємо правила ринків і кешуємо:
+      - amount/price precision (різні назви ключів підтримані)
+      - мінімальні обмеження, якщо є
+    Основний ендпоінт: /api/v4/public/markets
     """
     global market_rules
-    try:
-        symbols = await public_get("/api/v4/public/symbols")
-        if not isinstance(symbols, list):
-            logging.warning(f"unexpected /symbols payload: {symbols}")
-            return
 
-        rules: Dict[str, Dict[str, Any]] = {}
-        for s in symbols:
+    def _to_dec(v):
+        try:
+            return Decimal(str(v))
+        except Exception:
+            return None
+
+    def _parse_list(lst):
+        rules = {}
+        for s in lst:
             if not isinstance(s, dict):
                 continue
-            name = (s.get("name") or s.get("symbol") or "").upper()
+            name = (s.get("name") or s.get("symbol") or s.get("market") or "").upper()
             if not name:
                 continue
 
+            # можливі варіанти ключів
             amt_prec = (
                 s.get("amount_precision")
                 or s.get("stock_precision")
@@ -138,12 +144,14 @@ async def load_market_rules():
                 or s.get("amountPrecision")
                 or s.get("quantity_precision")
                 or s.get("quantityPrecision")
+                or s.get("stockPrec")
             )
             price_prec = (
                 s.get("price_precision")
                 or s.get("money_precision")
                 or s.get("moneyPrecision")
                 or s.get("pricePrecision")
+                or s.get("moneyPrec")
             )
             try:
                 amt_prec = int(amt_prec) if amt_prec is not None else None
@@ -155,53 +163,34 @@ async def load_market_rules():
                 price_prec = None
 
             min_amount = s.get("min_amount") or s.get("minAmount")
-            min_total = s.get("min_total") or s.get("minTotal") or s.get("min_value") or s.get("minValue")
-
-            def _to_dec(v):
-                try:
-                    return Decimal(str(v))
-                except Exception:
-                    return None
+            min_total  = s.get("min_total")  or s.get("minTotal") or s.get("min_value") or s.get("minValue")
 
             rules[name] = {
-                "amount_precision": amt_prec,
-                "price_precision": price_prec,
+                "amount_precision": amt_prec if amt_prec is not None else 6,
+                "price_precision":  price_prec if price_prec is not None else 6,
                 "min_amount": _to_dec(min_amount),
-                "min_total": _to_dec(min_total),
+                "min_total":  _to_dec(min_total),
             }
+        return rules
 
-        market_rules = rules
-        logging.info(f"Loaded market rules for {len(market_rules)} symbols")
+    try:
+        # основний запит
+        data = await public_get("/api/v4/public/markets")
+        if isinstance(data, list) and data:
+            market_rules = _parse_list(data)
+            logging.info(f"Loaded market rules from /markets for {len(market_rules)} symbols")
+            return
+
+        # страховка: деякі інсталяції мають /public/symbol (однина) або інші поля
+        alt = await public_get("/api/v4/public/symbols")
+        if isinstance(alt, list) and alt:
+            market_rules = _parse_list(alt)
+            logging.info(f"Loaded market rules from /symbols for {len(market_rules)} symbols")
+            return
+
+        logging.warning(f"Rules fetch returned unexpected payloads: /markets={type(data)}, /symbols={type(alt)}")
     except Exception as e:
-        logging.error(f"load_market_rules error: {e}")
-
-def get_rules(market: str) -> Dict[str, Any]:
-    m = market.upper()
-    r = market_rules.get(m, {})
-    return {
-        "amount_precision": r.get("amount_precision", 6),
-        "price_precision": r.get("price_precision", 6),
-        "min_amount": r.get("min_amount"),
-        "min_total": r.get("min_total"),
-    }
-
-def step_from_precision(prec: int) -> Decimal:
-    return Decimal(1) / (Decimal(10) ** int(prec))
-
-def quantize_amount(market: str, amount: float) -> Decimal:
-    rules = get_rules(market)
-    step = step_from_precision(rules["amount_precision"])
-    return (Decimal(str(amount)) // step) * step  # вниз
-
-def quantize_price(market: str, price: float) -> Decimal:
-    rules = get_rules(market)
-    step = step_from_precision(rules["price_precision"])
-    return (Decimal(str(price)) // step) * step  # вниз
-
-def round_down(value: float, step: float) -> float:
-    d = Decimal(str(value))
-    s = Decimal(str(step))
-    return float((d // s) * s)
+        logging.error(f"load_market_rules error: {e}")s)
 
 # ---------------- WHITEBIT API WRAPPERS ----------------
 async def get_balance() -> dict:
