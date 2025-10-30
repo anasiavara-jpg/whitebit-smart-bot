@@ -138,10 +138,6 @@ async def place_market_order(market: str, side: str, amount: float) -> dict:
 
     logging.info(f"[DEBUG] market={market} side={side} amount={body['amount']} ({'quote' if side=='buy' else 'base'})")
     return await private_post("/api/v4/order/market", body)
-        "market": market,
-        "side": side,
-        "amount": amount,   # число, не str
-        "type": "market",
     })
 
 async def place_limit_order(market: str, side: str, price: float, amount: float,
