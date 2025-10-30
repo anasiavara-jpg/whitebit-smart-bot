@@ -189,8 +189,42 @@ async def load_market_rules():
             return
 
         logging.warning(f"Rules fetch returned unexpected payloads: /markets={type(data)}, /symbols={type(alt)}")
-    except Exception as e:
-        logging.error(f"load_market_rules error: {e}")s)
+        except Exception as e:
+        logging.error(f"load_market_rules error: {e}")
+
+# ---------------- PRECISION HELPERS ----------------
+def get_rules(market: str) -> Dict[str, Any]:
+    """
+    Повертає precision та min-обмеження для ринку.
+    Якщо в кеші нема — дефолт: 6 знаків.
+    """
+    m = market.upper()
+    r = market_rules.get(m, {})
+    return {
+        "amount_precision": r.get("amount_precision", 6),
+        "price_precision":  r.get("price_precision", 6),
+        "min_amount":       r.get("min_amount"),
+        "min_total":        r.get("min_total"),
+    }
+
+def step_from_precision(prec: int) -> Decimal:
+    return Decimal(1) / (Decimal(10) ** int(prec))
+
+def quantize_amount(market: str, amount: float) -> Decimal:
+    """
+    Округляє КІЛЬКІСТЬ (BASE) до кроку біржі вниз.
+    """
+    rules = get_rules(market)
+    step = step_from_precision(rules["amount_precision"])
+    return (Decimal(str(amount)) // step) * step
+
+def quantize_price(market: str, price: float) -> Decimal:
+    """
+    Округляє ЦІНУ (QUOTE) до кроку біржі вниз.
+    """
+    rules = get_rules(market)
+    step = step_from_precision(rules["price_precision"])
+    return (Decimal(str(price)) // step) * step
 
 # ---------------- WHITEBIT API WRAPPERS ----------------
 async def get_balance() -> dict:
