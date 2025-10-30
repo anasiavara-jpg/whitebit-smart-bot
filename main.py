@@ -120,7 +120,7 @@ async def place_market_order(market: str, side: str, amount: float) -> dict:
     return await private_post("/api/v4/order/market", {
         "market": market,           # "BTC_USDT"
         "side": side,               # "buy" | "sell"
-        "amount": str(amount),      # у базовій валюті (BTC у BTC_USDT)
+        "amount": amount,           # ← число, не str
         "type": "market",
     })
 
@@ -128,11 +128,14 @@ async def place_limit_order(market: str, side: str, price: float, amount: float,
                             client_order_id: Optional[str] = None, post_only: Optional[bool] = None,
                             stp: Optional[str] = None) -> dict:
     # POST /api/v4/order/new
+async def place_limit_order(market: str, side: str, price: float, amount: float,
+                            client_order_id: Optional[str] = None, post_only: Optional[bool] = None,
+                            stp: Optional[str] = None) -> dict:
     body = {
         "market": market,
         "side": side,
-        "amount": str(amount),
-        "price": str(price),
+        "amount": amount,   # ← число
+        "price": price,     # ← число
         "type": "limit",
     }
     if client_order_id:
@@ -140,7 +143,7 @@ async def place_limit_order(market: str, side: str, price: float, amount: float,
     if post_only is not None:
         body["postOnly"] = bool(post_only)
     if stp:
-        body["stp"] = stp  # "cancel_new", "cancel_both", "decrease_and_cancel"
+        body["stp"] = st
     return await private_post("/api/v4/order/new", body)
 
 async def active_orders(market: Optional[str] = None) -> dict:
