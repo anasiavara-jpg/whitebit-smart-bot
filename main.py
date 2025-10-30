@@ -15,6 +15,14 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from dotenv import load_dotenv
+# --- ADD near imports ---
+from decimal import Decimal
+
+def round_down(value: float, step: float) -> float:
+    d = Decimal(str(value))
+    s = Decimal(str(step))
+    # цілочисельне ділення -> назад у float
+    return float((d // s) * s)
 
 # ---------------- CONFIG ----------------
 load_dotenv()
@@ -115,9 +123,21 @@ async def get_balance() -> dict:
     logging.info(f"DEBUG balance: {data}")
     return data if isinstance(data, dict) else {}
 
+# --- REPLACE your place_market_order with this ---
 async def place_market_order(market: str, side: str, amount: float) -> dict:
-    logging.info(f"[DEBUG] market={market} side={side} amount={amount} type={type(amount)}")
-    return await private_post("/api/v4/order/market", {
+    """
+    WhiteBIT v4:
+      - BUY  -> amount = сума у котируваній (quote) валюті (для BTC_USDT це USDT)
+      - SELL -> amount = кількість базової (base) монети
+    """
+    body = {"market": market, "side": side, "type": "market"}
+    if side.lower() == "buy":
+        body["amount"] = round_down(amount, 0.01)  # total step по USDT
+    else:
+        body["amount"] = float(amount)
+
+    logging.info(f"[DEBUG] market={market} side={side} amount={body['amount']} ({'quote' if side=='buy' else 'base'})")
+    return await private_post("/api/v4/order/market", body)
         "market": market,
         "side": side,
         "amount": amount,   # число, не str
@@ -315,10 +335,11 @@ def _extract_order_id(resp: dict) -> Optional[int]:
             return None
     return None
 
+# --- REPLACE the body of start_new_trade with this version ---
 async def start_new_trade(market: str, cfg: dict):
-    # 1) Баланс
-    balances = await get_balance()
-    usdt_av = (balances.get("USDT") or {}).get("available", 0)
+    # 1) Баланс до
+    balances_before = await get_balance()
+    usdt_av = (balances_before.get("USDT") or {}).get("available", 0)
     try:
         usdt = float(usdt_av)
     except Exception:
@@ -335,22 +356,35 @@ async def start_new_trade(market: str, cfg: dict):
         logging.error(f"Не вдалося отримати last_price для {market}.")
         return
 
-    # 3) Розрахунок кількості (базова монета)
-    base_amount = round(spend / last_price, 8)
-    if base_amount <= 0:
-        logging.error(f"Нульовий обсяг базової монети: spend={spend}, price={last_price}")
-        return
+    # 3) Символ бази (BTC_USDT -> BTC)
+    base_symbol = market.split("_")[0].upper()
 
-    # 4) Купівля market
-    buy_res = await place_market_order(market, "buy", base_amount)
-    if isinstance(buy_res, dict) and buy_res.get("success") is False:
+    # 4) Маркет-купівля: для BUY amount = сума USDT
+    buy_res = await place_market_order(market, "buy", spend)
+    if not isinstance(buy_res, dict) or (buy_res.get("success") is False):
         logging.error(f"Помилка купівлі: {buy_res}")
         return
     logging.info(f"BUY placed: {buy_res}")
 
-    # 5) Створення TP/SL як окремих лімітів (дзеркальне OCO)
+    # 5) Баланс після — визначаємо фактично куплену базову кількість
+    balances_after = await get_balance()
+    def _f(v):
+        try: return float(v)
+        except: return 0.0
+
+    base_before = _f((balances_before.get(base_symbol) or {}).get("available", 0))
+    base_after  = _f((balances_after.get(base_symbol)  or {}).get("available", 0))
+    base_amount = round(max(base_after - base_before, 0.0), 8)
+
+    # fallback, якщо дельта не спрацювала
+    if base_amount <= 0:
+        base_amount = round(spend / last_price, 8)
+    if base_amount <= 0:
+        logging.error(f"Нульовий обсяг базової монети після купівлі: spend={spend}, price={last_price}")
+        return
+
+    # 6) Створення TP/SL як окремих лімітів
     cfg["orders"] = []
-    # для відстеження — clientOrderId (зручніше для cancel)
     ts = now_ms()
 
     if cfg.get("tp"):
