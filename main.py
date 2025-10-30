@@ -189,7 +189,7 @@ async def load_market_rules():
             return
 
         logging.warning(f"Rules fetch returned unexpected payloads: /markets={type(data)}, /symbols={type(alt)}")
-        except Exception as e:
+    except Exception as e:
         logging.error(f"load_market_rules error: {e}")
 
 # ---------------- PRECISION HELPERS ----------------
