@@ -386,8 +386,9 @@ async def place_limit_order(
         body["clientOrderId"] = str(client_order_id)
     if post_only is not None:
         body["postOnly"] = bool(post_only)
-    if stp:
-        body["stp"] = stp
+    # STP вимикаємо: на WhiteBIT v4 часто не підтримується і дає 400
+    # if stp:
+    #     body["stp"] = stp
 
     return await private_post("/api/v4/order/new", body)
 
@@ -395,14 +396,33 @@ async def active_orders(market: Optional[str] = None) -> dict:
     body = {}
     if market:
         body["market"] = market
+
     data = await private_post("/api/v4/orders", body)
 
-    # Нормалізація: інколи прилітає список, інколи {orders:[...]} або dict без ключа 'orders'
-    if isinstance(data, list):
-        return {"orders": data}
-    if isinstance(data, dict):
-        lst = data.get("orders")
-        return {"orders": lst if isinstance(lst, list) else []}
+    def _normalize(d):
+        if isinstance(d, list):
+            return {"orders": d}
+        if isinstance(d, dict):
+            lst = d.get("orders")
+            if isinstance(lst, list):
+                return {"orders": lst}
+            for k in ("result", "data"):
+                v = d.get(k)
+                if isinstance(v, list):
+                    return {"orders": v}
+        return None
+
+    norm = _normalize(data)
+    if norm is not None:
+        return norm
+
+    # Фолбек: альтернативний ендпоінт активних ордерів
+    alt = await private_post("/api/v4/order/active", body)
+    norm_alt = _normalize(alt)
+    if norm_alt is not None:
+        return norm_alt
+
+    logging.warning(f"[active_orders] unexpected payloads: /orders={type(data)}, /order/active={type(alt)}")
     return {"orders": []}
 
 async def cancel_order(market: str, order_id: Optional[int] = None, client_order_id: Optional[str] = None) -> dict:
@@ -426,23 +446,35 @@ async def get_last_price(market: str) -> Optional[float]:
         data = await public_get(f"/api/v4/public/ticker?market={market}")
         if isinstance(data, dict) and market in data:
             lp = data[market].get("last_price")
-            return float(lp) if lp is not None else None
+            try:
+                return float(lp) if lp is not None else None
+            except Exception:
+                return None
         if isinstance(data, list):
             for item in data:
                 if isinstance(item, dict) and item.get("market") == market:
                     lp = item.get("last_price")
-                    return float(lp) if lp is not None else None
+                    try:
+                        return float(lp) if lp is not None else None
+                    except Exception:
+                        return None
 
         # 2) фолбек — загальний тікер
         t = await public_get("/api/v4/public/ticker")
         if isinstance(t, dict):
             lp = (t.get(market) or {}).get("last_price")
-            return float(lp) if lp is not None else None
+            try:
+                return float(lp) if lp is not None else None
+            except Exception:
+                return None
         if isinstance(t, list):
             for item in t:
                 if isinstance(item, dict) and item.get("market") == market:
                     lp = item.get("last_price")
-                    return float(lp) if lp is not None else None
+                    try:
+                        return float(lp) if lp is not None else None
+                    except Exception:
+                        return None
     except Exception as e:
         logging.exception(f"Не вдалося взяти last_price для {market}: {e}")
     return None
@@ -816,7 +848,7 @@ async def start_new_trade(market: str, cfg: dict):
         tp_price = float(quantize_price(market, last_price * (1 + float(cfg["tp"]) / 100)))
         cfg["last_tp_price"] = tp_price
         cid = f"wb-{market}-tp-{ts}"
-        tp_order = await place_limit_order(market, "sell", tp_price, base_amount, client_order_id=cid, stp="cancel_new")
+        tp_order = await place_limit_order(market, "sell", tp_price, base_amount, client_order_id=cid)
         oid = _extract_order_id(tp_order)
         if oid:
             cfg["orders"].append({"id": oid, "cid": cid, "type": "tp", "market": market})
@@ -824,7 +856,7 @@ async def start_new_trade(market: str, cfg: dict):
     if cfg.get("sl"):
         sl_price = float(quantize_price(market, last_price * (1 - float(cfg["sl"]) / 100)))
         cid = f"wb-{market}-sl-{ts}"
-        sl_order = await place_limit_order(market, "sell", sl_price, base_amount, client_order_id=cid, stp="cancel_new")
+        sl_order = await place_limit_order(market, "sell", sl_price, base_amount, client_order_id=cid)
         oid = _extract_order_id(sl_order)
         if oid:
             cfg["orders"].append({"id": oid, "cid": cid, "type": "sl", "market": market})
@@ -865,7 +897,7 @@ async def place_tp_sl_from_holdings(market: str, cfg: dict) -> bool:
                 logging.warning(f"[HOLDINGS-TP] {market}: safe_amount*TP({tp_price}) < min_total ({min_total}). Пропускаю TP.")
         if can_place_tp:
             cid = f"wb-{market}-tp-{ts}"
-            tp_order = await place_limit_order(market, "sell", tp_price, float(safe_amount), client_order_id=cid, stp="cancel_new")
+            tp_order = await place_limit_order(market, "sell", tp_price, float(safe_amount), client_order_id=cid)
             oid = _extract_order_id(tp_order)
             if oid:
                 cfg["orders"].append({"id": oid, "cid": cid, "type": "tp", "market": market})
@@ -883,7 +915,7 @@ async def place_tp_sl_from_holdings(market: str, cfg: dict) -> bool:
                 logging.warning(f"[HOLDINGS-SL] {market}: safe_amount*SL({sl_price}) < min_total ({min_total}). Пропускаю SL.")
         if can_place_sl:
             cid = f"wb-{market}-sl-{ts}"
-            sl_order = await place_limit_order(market, "sell", sl_price, float(safe_amount), client_order_id=cid, stp="cancel_new")
+            sl_order = await place_limit_order(market, "sell", sl_price, float(safe_amount), client_order_id=cid)
             oid = _extract_order_id(sl_order)
             if oid:
                 cfg["orders"].append({"id": oid, "cid": cid, "type": "sl", "market": market})
@@ -941,7 +973,7 @@ async def monitor_orders():
     """
     Кожні 10с перевіряємо активні ордери.
     Якщо один із пари TP/SL закрився — відміняємо інший і (якщо autotrade) перезапускаємо цикл.
-    Якщо autotrейд ON і немає активних/відстежуваних ордерів — автозапуск:
+    Якщо autотрейд ON і немає активних/відстежуваних ордерів — автозапуск:
       1) старт від наявних монет (TP/SL без купівлі),
       2) якщо холдингів нема — fallback на купівлю за USDT,
       3) після TP — опційний ребай на знижці.
@@ -971,10 +1003,12 @@ async def monitor_orders():
                         break
 
                 if finished_any:
-                    await bot.send_message(
-                        chat_id=cfg.get("chat_id", 0) or 0,
-                        text=f"✅ Ордер {finished_any['id']} ({market}, {finished_any['type']}) закрито!"
-                    )
+                    chat_id = cfg.get("chat_id")
+                    if chat_id:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=f"✅ Ордер {finished_any['id']} ({market}, {finished_any['type']}) закрито!"
+                        )
                     # скасувати інші з пари
                     for entry in list(cfg["orders"]):
                         if entry["id"] != finished_any["id"]:
@@ -989,25 +1023,31 @@ async def monitor_orders():
                             ref = cfg.get("last_tp_price") or (await get_last_price(market))
                             oid = await place_limit_buy_at_discount(market, cfg, float(ref or 0))
                             if oid:
-                                await bot.send_message(
-                                    chat_id=cfg.get("chat_id", 0) or 0,
-                                    text=f"🔻 {market}: лімітний відкуп на {cfg['rebuy_pct']}% нижче TP виставлено (order {oid})"
-                                )
+                                chat_id = cfg.get("chat_id")
+                                if chat_id:
+                                    await bot.send_message(
+                                        chat_id=chat_id,
+                                        text=f"🔻 {market}: лімітний відкуп на {cfg['rebuy_pct']}% нижче TP виставлено (order {oid})"
+                                    )
                                 handled = True
                         elif finished_any.get("type") == "rebuy":
                             ok = await place_tp_sl_from_holdings(market, cfg)
                             if ok:
-                                await bot.send_message(
-                                    chat_id=cfg.get("chat_id", 0) or 0,
-                                    text=f"🎯 {market}: після відкупу виставлено TP/SL від холдингів"
-                                )
+                                chat_id = cfg.get("chat_id")
+                                if chat_id:
+                                    await bot.send_message(
+                                        chat_id=chat_id,
+                                        text=f"🎯 {market}: після відкупу виставлено TP/SL від холдингів"
+                                    )
                                 handled = True
 
                         if not handled:
-                            await bot.send_message(
-                                chat_id=cfg.get("chat_id", 0) or 0,
-                                text=f"♻️ Автотрейд {market}: нова угода на {cfg['buy_usdt']} USDT"
-                            )
+                            chat_id = cfg.get("chat_id")
+                            if chat_id:
+                                await bot.send_message(
+                                    chat_id=chat_id,
+                                    text=f"♻️ Автотрейд {market}: нова угода на {cfg['buy_usdt']} USDT"
+                                )
                             await start_new_trade(market, cfg)
 
                 # --- АВТОСТАРТ ВІД НАЯВНИХ МОНЕТ / FALLBACK НА USDT ---
@@ -1018,20 +1058,24 @@ async def monitor_orders():
                         # 1) спроба старту без купівлі — з холдингів
                         started_from_holdings = await place_tp_sl_from_holdings(market, cfg)
                         if started_from_holdings:
-                            await bot.send_message(
-                                chat_id=cfg.get("chat_id", 0) or 0,
-                                text=f"▶️ {market}: старт від наявних монет (TP/SL виставлено)"
-                            )
+                            chat_id = cfg.get("chat_id")
+                            if chat_id:
+                                await bot.send_message(
+                                    chat_id=chat_id,
+                                    text=f"▶️ {market}: старт від наявних монет (TP/SL виставлено)"
+                                )
                         else:
                             # 2) fallback: купівля за USDT, якщо достатньо коштів
                             usdt = await get_usdt_available()
                             spend = Decimal(str(cfg.get("buy_usdt", 10)))
                             spend_adj = (spend * Decimal("0.998")).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
                             if usdt >= spend_adj and float(spend_adj) > 0:
-                                await bot.send_message(
-                                    chat_id=cfg.get("chat_id", 0) or 0,
-                                    text=f"▶️ {market}: автостарт купівлі на {spend_adj} USDT (бо холдингів немає)"
-                                )
+                                chat_id = cfg.get("chat_id")
+                                if chat_id:
+                                    await bot.send_message(
+                                        chat_id=chat_id,
+                                        text=f"▶️ {market}: автостарт купівлі на {spend_adj} USDT (бо холдингів немає)"
+                                    )
                                 await start_new_trade(market, cfg)
                             else:
                                 logging.info(f"[AUTOSTART SKIP] {market}: ні холдингів, ні достатньо USDT (USDT={usdt}, need≈{spend_adj})")
