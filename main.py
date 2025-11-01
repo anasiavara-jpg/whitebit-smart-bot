@@ -575,6 +575,70 @@ async def status_cmd(message: types.Message):
         )
     await message.answer(text)
 
+@dp.message(Command("orders"))
+async def orders_cmd(message: types.Message):
+    try:
+        _, market = message.text.split()
+        market = market.upper().replace("/", "_")
+    except Exception:
+        await message.answer("⚠️ Використання: /orders BTC/USDT")
+        return
+
+    data = await active_orders(market)
+    lst = data.get("orders", []) if isinstance(data, dict) else []
+    if not lst:
+        await message.answer(f"ℹ️ Для {market} активних ордерів немає.")
+        return
+
+    lines = []
+    for o in lst:
+        try:
+            oid = o.get("orderId") or o.get("id")
+            side = o.get("side")
+            typ  = o.get("type")
+            price = o.get("price")
+            amount = o.get("amount")
+            lines.append(f"#{oid}: {side}/{typ} price={price} amount={amount}")
+        except Exception:
+            continue
+
+    await message.answer("📄 <b>Активні ордери</b>:\n" + "\n".join(lines))
+
+@dp.message(Command("cancel"))
+async def cancel_cmd(message: types.Message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("⚠️ Використання: /cancel BTC/USDT [orderId|all]")
+        return
+    market = parts[1].upper().replace("/", "_")
+    target = parts[2].lower() if len(parts) >= 3 else None
+
+    if target == "all":
+        data = await active_orders(market)
+        lst = data.get("orders", []) if isinstance(data, dict) else []
+        cnt = 0
+        for o in lst:
+            oid = o.get("orderId") or o.get("id")
+            if oid:
+                res = await cancel_order(market, order_id=int(oid))
+                if isinstance(res, dict) and res.get("success") is not False:
+                    cnt += 1
+        await message.answer(f"🧹 Скасовано {cnt} ордер(и/ів) на {market}.")
+        return
+
+    # конкретний orderId
+    if target and target.isdigit():
+        res = await cancel_order(market, order_id=int(target))
+        ok = isinstance(res, dict) and res.get("success") is not False
+        await message.answer("✅ Скасовано." if ok else f"❌ Не вдалось скасувати #{target}.")
+    else:
+        await message.answer("⚠️ Використання: /cancel BTC/USDT 123456 або /cancel BTC/USDT all")
+VERSION = "v4.1-rebuy-fix+rules+retry"
+@dp.message(Command("version"))
+async def version_cmd(message: types.Message):
+    await message.answer(f"🤖 Bot version: {VERSION}")
+
+
 # ---------------- TRADE LOGIC ----------------
 def _extract_order_id(resp: dict) -> Optional[int]:
     if not isinstance(resp, dict):
