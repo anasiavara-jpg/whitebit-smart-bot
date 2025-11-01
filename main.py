@@ -257,12 +257,13 @@ def ensure_minima_for_order(market: str, side: str, price: Optional[float],
                 amount_quote = adj
         return (amount_base, amount_quote)
 
-    # MARKET SELL: price немає, але треба дотриматись min_amount
+        # MARKET SELL: price немає — перевіряємо лише min_amount у BASE
     if side_l == "sell" and price is None and amount_base is not None:
         if min_amount and amount_base < min_amount:
-            amount_base = ((min_amount // ap) * ap) if min_amount > 0 else ap
+            logging.info(f"[MIN AMOUNT] {market}: amount {amount_base} < {min_amount}, піднімаю.")
+            amount_base = ceil_to_step(min_amount, ap)
         return (amount_base, amount_quote)
-
+        
     # SELL або LIMIT BUY (price відома): перевіряємо min_amount і min_total
     if price and amount_base is not None:
         if min_amount and amount_base < min_amount:
@@ -359,7 +360,15 @@ async def active_orders(market: Optional[str] = None) -> dict:
     body = {}
     if market:
         body["market"] = market
-    return await private_post("/api/v4/orders", body)
+    data = await private_post("/api/v4/orders", body)
+
+    # Нормалізація: інколи прилітає список, інколи {orders:[...]} або dict без ключа 'orders'
+    if isinstance(data, list):
+        return {"orders": data}
+    if isinstance(data, dict):
+        lst = data.get("orders")
+        return {"orders": lst if isinstance(lst, list) else []}
+    return {"orders": []}
 
 async def cancel_order(market: str, order_id: Optional[int] = None, client_order_id: Optional[str] = None) -> dict:
     body = {"market": market}
