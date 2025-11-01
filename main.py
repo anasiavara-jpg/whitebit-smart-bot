@@ -1,4 +1,4 @@
-# main.py — WhiteBIT Smart Bot (v4-ready, clean + market rules/precision + holdings autostart + rebuy-after-TP)
+# main.py — WhiteBIT Smart Bot (v4-ready, clean + market rules/precision + holdings autostart + rebuy-after-TP, consolidated)
 import asyncio
 import base64
 import hashlib
@@ -87,6 +87,7 @@ def load_markets():
             dirty = True
     if dirty:
         save_markets()
+
 # ---------------- TIME/HELPERS ----------------
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -149,7 +150,7 @@ async def private_post(path: str, extra_body: Optional[dict] = None) -> dict:
             logging.error(f"WhiteBIT error: {data.get('message')}")
         return data
 
-# ---------------- MARKET RULES (fix: use /public/markets, fallback) ----------------
+# ---------------- MARKET RULES ----------------
 async def load_market_rules():
     """
     Завантажуємо правила ринків і кешуємо:
@@ -174,7 +175,6 @@ async def load_market_rules():
             if not name:
                 continue
 
-            # можливі варіанти ключів
             amt_prec = (
                 s.get("amount_precision")
                 or s.get("stock_precision")
@@ -212,14 +212,12 @@ async def load_market_rules():
         return rules
 
     try:
-        # основний запит
         data = await public_get("/api/v4/public/markets")
         if isinstance(data, list) and data:
             market_rules = _parse_list(data)
             logging.info(f"Loaded market rules from /markets for {len(market_rules)} symbols")
             return
 
-        # страховка: деякі інсталяції мають /public/symbols
         alt = await public_get("/api/v4/public/symbols")
         if isinstance(alt, list) and alt:
             market_rules = _parse_list(alt)
@@ -232,10 +230,6 @@ async def load_market_rules():
 
 # ---------------- PRECISION HELPERS ----------------
 def get_rules(market: str) -> Dict[str, Any]:
-    """
-    Повертає precision та min-обмеження для ринку.
-    Якщо в кеші нема — дефолт: 6 знаків.
-    """
     m = market.upper()
     r = market_rules.get(m, {})
     return {
@@ -260,17 +254,11 @@ def ceil_to_step(x: Decimal, step: Decimal) -> Decimal:
     return units * step
 
 def quantize_amount(market: str, amount: float) -> Decimal:
-    """
-    Округляє КІЛЬКІСТЬ (BASE) до кроку біржі вниз.
-    """
     rules = get_rules(market)
     step = step_from_precision(rules["amount_precision"])
     return (Decimal(str(amount)) // step) * step
 
 def quantize_price(market: str, price: float) -> Decimal:
-    """
-    Округляє ЦІНУ (QUOTE) до кроку біржі вниз.
-    """
     rules = get_rules(market)
     step = step_from_precision(rules["price_precision"])
     return (Decimal(str(price)) // step) * step
@@ -282,9 +270,9 @@ def ensure_minima_for_order(market: str, side: str, price: Optional[float],
       - min_amount (BASE)
       - min_total  (QUOTE = price * amount_base)
 
-    Для MARKET BUY керуємось amount_quote (price відсутня).
-    Для LIMIT (buy/sell) — перевіряємо і amount, і total (бо price відома).
-    ДОДАНО: для MARKET SELL (price відсутня) — застосовуємо лише min_amount.
+    MARKET BUY -> керуємось amount_quote (price немає).
+    LIMIT (buy/sell) -> перевіряємо і amount, і total (бо price відома).
+    MARKET SELL -> застосовуємо лише min_amount.
     """
     rules = get_rules(market)
     min_amount = rules.get("min_amount")  # Decimal | None
@@ -306,29 +294,29 @@ def ensure_minima_for_order(market: str, side: str, price: Optional[float],
                 amount_quote = adj
         return (amount_base, amount_quote)
 
-        # MARKET SELL: price немає — перевіряємо лише min_amount у BASE
+    # MARKET SELL: price немає — перевіряємо лише min_amount у BASE
     if side_l == "sell" and price is None and amount_base is not None:
         if min_amount and amount_base < min_amount:
             logging.info(f"[MIN AMOUNT] {market}: amount {amount_base} < {min_amount}, піднімаю.")
             amount_base = ceil_to_step(min_amount, ap)
         return (amount_base, amount_quote)
-        
-    # SELL або LIMIT BUY (price відома): перевіряємо min_amount і min_total
+
+    # SELL або LIMIT BUY (price відома): перевіряємо min_amount і min_total (тільки CEIL!)
     if price and amount_base is not None:
+        price_dec = Decimal(str(price))
         if min_amount and amount_base < min_amount:
-            amount_base = ((min_amount // ap) * ap) if min_amount > 0 else ap
+            amount_base = ceil_to_step(min_amount, ap)
 
         if min_total:
-            total = Decimal(str(price)) * amount_base
+            total = price_dec * amount_base
             if total < min_total:
-                need_base = (min_total / Decimal(str(price)))
-                need_base = (need_base // ap) * ap
-                if need_base <= 0:
-                    need_base = ap
+                need_base = min_total / price_dec
+                need_base = ceil_to_step(need_base, ap)
                 if need_base > amount_base:
                     amount_base = need_base
 
     return (amount_base, amount_quote)
+
 # ---------------- WHITEBIT API WRAPPERS ----------------
 async def get_balance() -> dict:
     data = await private_post("/api/v4/trade-account/balance")
@@ -345,15 +333,14 @@ async def place_market_order(market: str, side: str, amount: float) -> dict:
 
     if side.lower() == "buy":
         rules = get_rules(market)
-        quote_step = step_from_precision(rules["price_precision"])
+        quote_step = step_from_precision(rules["price_precision"])  # money/price precision
         q_amount = (Decimal(str(amount)) // quote_step) * quote_step
         if q_amount <= 0:
             q_amount = quote_step
 
-        # >>> Перевіряємо мінімальні значення (min_total)
+        # Перевіряємо мінімальне min_total
         _, q_amount = ensure_minima_for_order(market, "buy", price=None,
                                               amount_base=None, amount_quote=q_amount)
-
         body["amount"] = float(q_amount)
 
     else:
@@ -361,10 +348,9 @@ async def place_market_order(market: str, side: str, amount: float) -> dict:
         if a <= 0:
             a = step_from_precision(get_rules(market)["amount_precision"])
 
-        # >>> Перевіряємо мінімальні значення (min_amount)
+        # Перевіряємо мінімальне min_amount
         a, _ = ensure_minima_for_order(market, "sell", price=None,
                                        amount_base=a, amount_quote=None)
-
         body["amount"] = float(a)
 
     logging.info(
@@ -385,7 +371,7 @@ async def place_limit_order(
     if p <= 0:
         p = step_from_precision(get_rules(market)["price_precision"])
 
-    # >>> Перевіряємо мінімальні значення (min_total, min_amount)
+    # CEIL-мінімалки для лімітів
     a, _ = ensure_minima_for_order(market, side, price=float(p),
                                    amount_base=a, amount_quote=None)
 
@@ -438,11 +424,9 @@ async def get_last_price(market: str) -> Optional[float]:
     try:
         # 1) точково
         data = await public_get(f"/api/v4/public/ticker?market={market}")
-        # варіант dict: {"BTC_USDT": {"last_price": "..."}}
         if isinstance(data, dict) and market in data:
             lp = data[market].get("last_price")
             return float(lp) if lp is not None else None
-        # варіант list: [{"market":"BTC_USDT","last_price":"..."}]
         if isinstance(data, list):
             for item in data:
                 if isinstance(item, dict) and item.get("market") == market:
@@ -544,8 +528,8 @@ async def market_cmd(message: types.Message):
             "autotrade": False,
             "buy_usdt": 10,
             "chat_id": message.chat.id,
-            "rebuy_pct": 0.0,          # >>> REBUY FEATURE: % нижче TP для лімітного buy
-            "last_tp_price": None,     # >>> REBUY FEATURE: остання ціна TP, щоб знати від чого відраховувати
+            "rebuy_pct": 0.0,
+            "last_tp_price": None,
         }
         save_markets()
         await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
@@ -565,7 +549,6 @@ async def settp_cmd(message: types.Message):
         await message.answer(f"📈 TP для {market}: {percent}%")
     except Exception:
         await message.answer("⚠️ Використання: /settp BTC/USDT 5")
-
 
 @dp.message(Command("setsl"))
 async def setsl_cmd(message: types.Message):
@@ -596,7 +579,6 @@ async def setbuy_cmd(message: types.Message):
     except Exception:
         await message.answer("⚠️ Використання: /setbuy BTC/USDT 30")
 
-# >>> REBUY FEATURE: команда налаштування % відкупу нижче TP
 @dp.message(Command("setrebuy"))
 async def setrebuy_cmd(message: types.Message):
     try:
@@ -708,18 +690,17 @@ async def cancel_cmd(message: types.Message):
         await message.answer(f"🧹 Скасовано {cnt} ордер(и/ів) на {market}.")
         return
 
-    # конкретний orderId
     if target and target.isdigit():
         res = await cancel_order(market, order_id=int(target))
         ok = isinstance(res, dict) and res.get("success") is not False
         await message.answer("✅ Скасовано." if ok else f"❌ Не вдалось скасувати #{target}.")
     else:
         await message.answer("⚠️ Використання: /cancel BTC/USDT 123456 або /cancel BTC/USDT all")
-VERSION = "v4.1-rebuy-fix+rules+retry"
+
+VERSION = "v4.1.1-consolidated"
 @dp.message(Command("version"))
 async def version_cmd(message: types.Message):
     await message.answer(f"🤖 Bot version: {VERSION}")
-
 
 # ---------------- TRADE LOGIC ----------------
 def _extract_order_id(resp: dict) -> Optional[int]:
@@ -757,7 +738,7 @@ async def place_limit_buy_at_discount(market: str, cfg: dict, ref_price: float) 
     if base_amount <= 0:
         base_amount = step_from_precision(get_rules(market)["amount_precision"])
 
-    # Доводимо до мінімумів біржі (min_total/min_amount)
+    # Доводимо до мінімумів біржі (ceil!)
     base_amount, _ = ensure_minima_for_order(
         market, side="buy", price=float(target_price),
         amount_base=base_amount, amount_quote=None
@@ -833,7 +814,7 @@ async def start_new_trade(market: str, cfg: dict):
 
     if cfg.get("tp"):
         tp_price = float(quantize_price(market, last_price * (1 + float(cfg["tp"]) / 100)))
-        cfg["last_tp_price"] = tp_price  # >>> REBUY FEATURE: запам'ятовуємо TP ціну
+        cfg["last_tp_price"] = tp_price
         cid = f"wb-{market}-tp-{ts}"
         tp_order = await place_limit_order(market, "sell", tp_price, base_amount, client_order_id=cid, stp="cancel_new")
         oid = _extract_order_id(tp_order)
@@ -869,22 +850,43 @@ async def place_tp_sl_from_holdings(market: str, cfg: dict) -> bool:
     cfg["orders"] = []
     ts = now_ms()
 
+    # --- TP ---
     if cfg.get("tp"):
         tp_price = float(quantize_price(market, float(last_price) * (1 + float(cfg["tp"]) / 100)))
-        cfg["last_tp_price"] = tp_price  # >>> REBUY FEATURE: запам'ятовуємо TP ціну
-        cid = f"wb-{market}-tp-{ts}"
-        tp_order = await place_limit_order(market, "sell", tp_price, float(safe_amount), client_order_id=cid, stp="cancel_new")
-        oid = _extract_order_id(tp_order)
-        if oid:
-            cfg["orders"].append({"id": oid, "cid": cid, "type": "tp", "market": market})
+        cfg["last_tp_price"] = tp_price
+        # не збільшуємо amount понад safe_amount; якщо не вистачає до min_total — пропускаємо TP
+        rules = get_rules(market)
+        min_total = rules.get("min_total")
+        can_place_tp = True
+        if min_total:
+            est_total = Decimal(str(tp_price)) * Decimal(str(safe_amount))
+            if est_total < min_total:
+                can_place_tp = False
+                logging.warning(f"[HOLDINGS-TP] {market}: safe_amount*TP({tp_price}) < min_total ({min_total}). Пропускаю TP.")
+        if can_place_tp:
+            cid = f"wb-{market}-tp-{ts}"
+            tp_order = await place_limit_order(market, "sell", tp_price, float(safe_amount), client_order_id=cid, stp="cancel_new")
+            oid = _extract_order_id(tp_order)
+            if oid:
+                cfg["orders"].append({"id": oid, "cid": cid, "type": "tp", "market": market})
 
+    # --- SL ---
     if cfg.get("sl"):
         sl_price = float(quantize_price(market, float(last_price) * (1 - float(cfg["sl"]) / 100)))
-        cid = f"wb-{market}-sl-{ts}"
-        sl_order = await place_limit_order(market, "sell", sl_price, float(safe_amount), client_order_id=cid, stp="cancel_new")
-        oid = _extract_order_id(sl_order)
-        if oid:
-            cfg["orders"].append({"id": oid, "cid": cid, "type": "sl", "market": market})
+        rules = get_rules(market)
+        min_total = rules.get("min_total")
+        can_place_sl = True
+        if min_total:
+            est_total = Decimal(str(sl_price)) * Decimal(str(safe_amount))
+            if est_total < min_total:
+                can_place_sl = False
+                logging.warning(f"[HOLDINGS-SL] {market}: safe_amount*SL({sl_price}) < min_total ({min_total}). Пропускаю SL.")
+        if can_place_sl:
+            cid = f"wb-{market}-sl-{ts}"
+            sl_order = await place_limit_order(market, "sell", sl_price, float(safe_amount), client_order_id=cid, stp="cancel_new")
+            oid = _extract_order_id(sl_order)
+            if oid:
+                cfg["orders"].append({"id": oid, "cid": cid, "type": "sl", "market": market})
 
     save_markets()
     created = len(cfg.get("orders", [])) > 0
@@ -939,10 +941,10 @@ async def monitor_orders():
     """
     Кожні 10с перевіряємо активні ордери.
     Якщо один із пари TP/SL закрився — відміняємо інший і (якщо autotrade) перезапускаємо цикл.
-    Також, якщо autotrейд ON і немає активних/відстежуваних ордерів — автозапуск:
-      1) спроба старту від наявних монет (TP/SL без купівлі),
-      2) якщо холдингів нема — fallback на купівлю за USDT.
-      3) >>> REBUY FEATURE: після TP можемо ставити лімітний відкуп нижче TP
+    Якщо autotrейд ON і немає активних/відстежуваних ордерів — автозапуск:
+      1) старт від наявних монет (TP/SL без купівлі),
+      2) якщо холдингів нема — fallback на купівлю за USDT,
+      3) після TP — опційний ребай на знижці.
     """
     while True:
         try:
@@ -973,14 +975,14 @@ async def monitor_orders():
                         chat_id=cfg.get("chat_id", 0) or 0,
                         text=f"✅ Ордер {finished_any['id']} ({market}, {finished_any['type']}) закрито!"
                     )
-                    # Cкасувати інші з пари (як і раніше)
+                    # скасувати інші з пари
                     for entry in list(cfg["orders"]):
                         if entry["id"] != finished_any["id"]:
                             await cancel_order(market, order_id=entry["id"])
                     cfg["orders"].clear()
                     save_markets()
 
-                    # >>> REBUY FEATURE: умовна логіка після закриття
+                    # REBUY/рестарт логіка
                     handled = False
                     if cfg.get("autotrade"):
                         if finished_any.get("type") == "tp" and float(cfg.get("rebuy_pct", 0) or 0) > 0:
@@ -993,7 +995,6 @@ async def monitor_orders():
                                 )
                                 handled = True
                         elif finished_any.get("type") == "rebuy":
-                            # купівля відбулась по ліміту — ставимо TP/SL від холдингів
                             ok = await place_tp_sl_from_holdings(market, cfg)
                             if ok:
                                 await bot.send_message(
@@ -1003,7 +1004,6 @@ async def monitor_orders():
                                 handled = True
 
                         if not handled:
-                            # стара поведінка (ринковий рестарт циклу)
                             await bot.send_message(
                                 chat_id=cfg.get("chat_id", 0) or 0,
                                 text=f"♻️ Автотрейд {market}: нова угода на {cfg['buy_usdt']} USDT"
