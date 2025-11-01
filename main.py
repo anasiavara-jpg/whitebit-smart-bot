@@ -622,7 +622,7 @@ async def start_new_trade(market: str, cfg: dict):
     except Exception:
         usdt = 0.0
 
-        spend = float(cfg.get("buy_usdt", 10.0))
+    spend = float(cfg.get("buy_usdt", 10.0))
 
     # >>> Перевіряємо мінімальну суму для ринку (min_total)
     _, spend_dec = ensure_minima_for_order(market, "buy", price=None,
@@ -745,24 +745,6 @@ async def buy_cmd(message: types.Message):
         await message.answer(f"✅ Купівля {market} виконана на {markets[market]['buy_usdt']} USDT.")
     except Exception:
         await message.answer("⚠️ Використання: /buy BTC/USDT")
-
-@dp.message(Command("status"))
-async def status_cmd(message: types.Message):
-    if not markets:
-        await message.answer("ℹ️ Активних ринків немає.")
-        return
-    text = "📊 <b>Статус</b>:\n"
-    for m, cfg in markets.items():
-        text += (
-            f"\n{m}:\n"
-            f" TP: {cfg['tp']}%\n"
-            f" SL: {cfg['sl']}%\n"
-            f" Buy: {cfg['buy_usdt']} USDT\n"
-            f" Автотрейд: {cfg['autotrade']}\n"
-            f" Rebuy: {cfg.get('rebuy_pct', 0)}%\n"
-            f" Ордерів: {len(cfg.get('orders', []))}\n"
-        )
-    await message.answer(text)
 
 @dp.message(Command("removemarket"))
 async def removemarket_cmd(message: types.Message):
