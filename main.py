@@ -47,12 +47,26 @@ def save_markets():
     except Exception as e:
         logging.error(f"Помилка збереження markets.json: {e}")
 
+def _normalize_market_cfg(cfg: dict) -> dict:
+    # гарантуємо наявність ключів для різних версій файлу
+    cfg = dict(cfg or {})
+    cfg.setdefault("tp", None)
+    cfg.setdefault("sl", None)
+    cfg.setdefault("orders", [])
+    cfg.setdefault("autotrade", False)
+    cfg.setdefault("buy_usdt", 10)
+    cfg.setdefault("chat_id", None)
+    cfg.setdefault("rebuy_pct", 0.0)
+    cfg.setdefault("last_tp_price", None)
+    return cfg
+
 def load_markets():
     global markets
     if os.path.exists(MARKETS_FILE):
         try:
             with open(MARKETS_FILE, "r", encoding="utf-8") as f:
-                markets = json.load(f)
+                raw = json.load(f)
+                markets = raw if isinstance(raw, dict) else {}
         except Exception as e:
             logging.error(f"Помилка завантаження markets.json: {e}")
             markets = {}
@@ -60,6 +74,19 @@ def load_markets():
         markets = {}
         save_markets()
 
+    # нормалізація існуючих ринків
+    dirty = False
+    for m in list(markets.keys()):
+        if isinstance(markets[m], dict):
+            new_cfg = _normalize_market_cfg(markets[m])
+            if new_cfg != markets[m]:
+                markets[m] = new_cfg
+                dirty = True
+        else:
+            del markets[m]
+            dirty = True
+    if dirty:
+        save_markets()
 # ---------------- TIME/HELPERS ----------------
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -402,15 +429,39 @@ async def cancel_order(market: str, order_id: Optional[int] = None, client_order
         return {"success": False, "message": "Потрібно вказати order_id або client_order_id"}
     return await private_post("/api/v4/order/cancel", body)
 
-# ---------------- PUBLIC TICKER ----------------
+# ---------------- PUBLIC TICKER (надійний) ----------------
 async def get_last_price(market: str) -> Optional[float]:
-    t = await public_get("/api/v4/public/ticker")
+    """
+    Стабільно дістає last_price незалежно від формату відповіді.
+    Спочатку точковий запит, далі фолбек на загальний.
+    """
     try:
-        lp = t.get(market, {}).get("last_price")
-        return float(lp) if lp is not None else None
-    except Exception:
-        logging.error(f"Не вдалося взяти last_price для {market}: {t}")
-        return None
+        # 1) точково
+        data = await public_get(f"/api/v4/public/ticker?market={market}")
+        # варіант dict: {"BTC_USDT": {"last_price": "..."}}
+        if isinstance(data, dict) and market in data:
+            lp = data[market].get("last_price")
+            return float(lp) if lp is not None else None
+        # варіант list: [{"market":"BTC_USDT","last_price":"..."}]
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and item.get("market") == market:
+                    lp = item.get("last_price")
+                    return float(lp) if lp is not None else None
+
+        # 2) фолбек — загальний тікер
+        t = await public_get("/api/v4/public/ticker")
+        if isinstance(t, dict):
+            lp = (t.get(market) or {}).get("last_price")
+            return float(lp) if lp is not None else None
+        if isinstance(t, list):
+            for item in t:
+                if isinstance(item, dict) and item.get("market") == market:
+                    lp = item.get("last_price")
+                    return float(lp) if lp is not None else None
+    except Exception as e:
+        logging.exception(f"Не вдалося взяти last_price для {market}: {e}")
+    return None
 
 # ---------------- EXTRA HELPERS FOR HOLDINGS/AUTOSTART ----------------
 def base_symbol_from_market(market: str) -> str:
@@ -697,9 +748,7 @@ async def place_limit_buy_at_discount(market: str, cfg: dict, ref_price: float) 
 
     target_price = float(quantize_price(market, ref_price * (1 - pct / 100.0)))
     spend = Decimal(str(cfg.get("buy_usdt", 10)))
-    # трохи нижче, щоб влізти у кроки
     spend_adj = (spend * Decimal("0.998")).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
-
     if float(spend_adj) <= 0:
         return None
 
@@ -708,8 +757,17 @@ async def place_limit_buy_at_discount(market: str, cfg: dict, ref_price: float) 
     if base_amount <= 0:
         base_amount = step_from_precision(get_rules(market)["amount_precision"])
 
+    # Доводимо до мінімумів біржі (min_total/min_amount)
+    base_amount, _ = ensure_minima_for_order(
+        market, side="buy", price=float(target_price),
+        amount_base=base_amount, amount_quote=None
+    )
+
     cid = f"wb-{market}-rebuy-{now_ms()}"
-    res = await place_limit_order(market, "buy", target_price, float(base_amount), client_order_id=cid, post_only=True)
+    res = await place_limit_order(
+        market, "buy", target_price, float(base_amount),
+        client_order_id=cid, post_only=True
+    )
     oid = _extract_order_id(res)
     if oid:
         cfg.setdefault("orders", []).append({"id": oid, "cid": cid, "type": "rebuy", "market": market})
