@@ -15,7 +15,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from dotenv import load_dotenv
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 
 # ---------------- CONFIG ----------------
 load_dotenv()
@@ -64,6 +64,17 @@ def load_markets():
 def now_ms() -> int:
     return int(time.time() * 1000)
 
+# монотонний nonce: гарантуємо зростання навіть якщо кілька запитів у той самий ms
+_nonce = now_ms()
+def next_nonce() -> int:
+    global _nonce
+    n = now_ms()
+    if n <= _nonce:
+        _nonce += 1
+    else:
+        _nonce = n
+    return _nonce
+
 def _payload_and_headers(path: str, extra_body: Optional[dict] = None) -> tuple[bytes, dict]:
     """
     WhiteBIT v4 auth:
@@ -71,7 +82,7 @@ def _payload_and_headers(path: str, extra_body: Optional[dict] = None) -> tuple[
       X-TXC-PAYLOAD = base64(body_bytes)
       X-TXC-SIGNATURE = hex(HMAC_SHA512(payload_b64, API_SECRET))
     """
-    body = {"request": path, "nonce": now_ms()}
+    body = {"request": path, "nonce": next_nonce()}
     if extra_body:
         body.update(extra_body)
 
@@ -209,6 +220,17 @@ def get_rules(market: str) -> Dict[str, Any]:
 
 def step_from_precision(prec: int) -> Decimal:
     return Decimal(1) / (Decimal(10) ** int(prec))
+
+def ceil_to_step(x: Decimal, step: Decimal) -> Decimal:
+    """
+    Підняти число x до найближчого кратного step (CEIL).
+    Використовується, коли треба довести amount/total до біржового мінімуму.
+    """
+    x = Decimal(str(x))
+    if step <= 0:
+        return x
+    units = (x / step).to_integral_value(rounding=ROUND_UP)
+    return units * step
 
 def quantize_amount(market: str, amount: float) -> Decimal:
     """
