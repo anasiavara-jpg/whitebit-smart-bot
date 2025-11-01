@@ -1,4 +1,4 @@
-# main.py — WhiteBIT Smart Bot (v4-ready, clean + market rules/precision + holdings autostart)
+# main.py — WhiteBIT Smart Bot (v4-ready, clean + market rules/precision + holdings autostart + rebuy-after-TP)
 import asyncio
 import base64
 import hashlib
@@ -181,7 +181,7 @@ async def load_market_rules():
             logging.info(f"Loaded market rules from /markets for {len(market_rules)} symbols")
             return
 
-        # страховка: деякі інсталяції мають /public/symbol (однина) або інші поля
+        # страховка: деякі інсталяції мають /public/symbols
         alt = await public_get("/api/v4/public/symbols")
         if isinstance(alt, list) and alt:
             market_rules = _parse_list(alt)
@@ -357,7 +357,8 @@ async def help_cmd(message: types.Message):
         "/removemarket BTC/USDT — видаляє ринок\n\n"
         "<b>Технічні:</b>\n"
         "/restart — перезапуск логіки\n"
-        "/autotrade BTC/USDT on|off — увімк/вимк автотрейд"
+        "/autotrade BTC/USDT on|off — увімк/вимк автотрейд\n"
+        "/setrebuy BTC/USDT 2 — % відкупу нижче TP (0 = вимкнено)"
     )
 
 @dp.message(Command("balance"))
@@ -392,6 +393,8 @@ async def market_cmd(message: types.Message):
             "autotrade": False,
             "buy_usdt": 10,
             "chat_id": message.chat.id,
+            "rebuy_pct": 0.0,          # >>> REBUY FEATURE: % нижче TP для лімітного buy
+            "last_tp_price": None,     # >>> REBUY FEATURE: остання ціна TP, щоб знати від чого відраховувати
         }
         save_markets()
         await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
@@ -435,24 +438,44 @@ async def setbuy_cmd(message: types.Message):
     except Exception:
         await message.answer("⚠️ Використання: /setbuy BTC/USDT 30")
 
-@dp.message(Command("autotrade"))
-async def autotrade_cmd(message: types.Message):
+# >>> REBUY FEATURE: команда налаштування % відкупу нижче TP
+@dp.message(Command("setrebuy"))
+async def setrebuy_cmd(message: types.Message):
     try:
-        _, market, mode = message.text.split()
+        _, market, pct = message.text.split()
         market = market.upper().replace("/", "_")
+        pct = float(pct)
         if market not in markets:
             await message.answer("❌ Спочатку додай ринок через /market.")
             return
-        if mode.lower() == "on":
-            markets[market]["autotrade"] = True
-            save_markets()
-            await message.answer(f"♻️ Автотрейд для {market} увімкнено.")
-        elif mode.lower() == "off":
-            markets[market]["autotrade"] = False
-            save_markets()
-            await message.answer(f"⏹️ Автотрейд для {market} вимкнено.")
-        else:
+        if pct < 0:
+            await message.answer("⚠️ Вкажи відсоток ≥ 0. (0 вимикає відкуп нижче TP)")
+            return
+        markets[market]["rebuy_pct"] = pct
+        save_markets()
+        await message.answer(
+            f"🔁 Re-buy для {market}: {pct}% нижче TP " + ("(вимкнено)" if pct == 0 else "")
+        )
+    except Exception:
+        await message.answer("⚠️ Використання: /setrebuy BTC/USDT 2")
+
+@dp.message(Command("autotrade"))
+async def autotrade_cmd(message: types.Message):
+    try:
+        _, market, state = message.text.split()
+        market = market.upper().replace("/", "_")
+        state = state.strip().lower()
+        if market not in markets:
+            await message.answer("❌ Спочатку додай ринок через /market.")
+            return
+        if state not in ("on", "off"):
             await message.answer("⚠️ Використання: /autotrade BTC/USDT on|off")
+            return
+        markets[market]["autotrade"] = (state == "on")
+        save_markets()
+        await message.answer(
+            f"{'✅' if markets[market]['autotrade'] else '⏹️'} Autotrade для {market}: {state.upper()}"
+        )
     except Exception:
         await message.answer("⚠️ Використання: /autotrade BTC/USDT on|off")
 
@@ -471,6 +494,36 @@ def _extract_order_id(resp: dict) -> Optional[int]:
         except Exception:
             return None
     return None
+
+# >>> REBUY FEATURE: допоміжна функція виставити лімітний BUY на знижці від довідкової ціни
+async def place_limit_buy_at_discount(market: str, cfg: dict, ref_price: float) -> Optional[int]:
+    try:
+        pct = float(cfg.get("rebuy_pct", 0) or 0)
+    except Exception:
+        pct = 0.0
+    if pct <= 0 or not ref_price or ref_price <= 0:
+        return None
+
+    target_price = float(quantize_price(market, ref_price * (1 - pct / 100.0)))
+    spend = Decimal(str(cfg.get("buy_usdt", 10)))
+    # трохи нижче, щоб влізти у кроки
+    spend_adj = (spend * Decimal("0.998")).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+    if float(spend_adj) <= 0:
+        return None
+
+    # amount у BASE = USDT / price
+    base_amount = quantize_amount(market, float(spend_adj) / target_price)
+    if base_amount <= 0:
+        base_amount = step_from_precision(get_rules(market)["amount_precision"])
+
+    cid = f"wb-{market}-rebuy-{now_ms()}"
+    res = await place_limit_order(market, "buy", target_price, float(base_amount), client_order_id=cid, post_only=True)
+    oid = _extract_order_id(res)
+    if oid:
+        cfg.setdefault("orders", []).append({"id": oid, "cid": cid, "type": "rebuy", "market": market})
+        save_markets()
+    return oid
 
 async def start_new_trade(market: str, cfg: dict):
     # 1) Баланс до
@@ -525,6 +578,7 @@ async def start_new_trade(market: str, cfg: dict):
 
     if cfg.get("tp"):
         tp_price = float(quantize_price(market, last_price * (1 + float(cfg["tp"]) / 100)))
+        cfg["last_tp_price"] = tp_price  # >>> REBUY FEATURE: запам'ятовуємо TP ціну
         cid = f"wb-{market}-tp-{ts}"
         tp_order = await place_limit_order(market, "sell", tp_price, base_amount, client_order_id=cid, stp="cancel_new")
         oid = _extract_order_id(tp_order)
@@ -562,6 +616,7 @@ async def place_tp_sl_from_holdings(market: str, cfg: dict) -> bool:
 
     if cfg.get("tp"):
         tp_price = float(quantize_price(market, float(last_price) * (1 + float(cfg["tp"]) / 100)))
+        cfg["last_tp_price"] = tp_price  # >>> REBUY FEATURE: запам'ятовуємо TP ціну
         cid = f"wb-{market}-tp-{ts}"
         tp_order = await place_limit_order(market, "sell", tp_price, float(safe_amount), client_order_id=cid, stp="cancel_new")
         oid = _extract_order_id(tp_order)
@@ -610,6 +665,7 @@ async def status_cmd(message: types.Message):
             f" SL: {cfg['sl']}%\n"
             f" Buy: {cfg['buy_usdt']} USDT\n"
             f" Автотрейд: {cfg['autotrade']}\n"
+            f" Rebuy: {cfg.get('rebuy_pct', 0)}%\n"
             f" Ордерів: {len(cfg.get('orders', []))}\n"
         )
     await message.answer(text)
@@ -646,9 +702,10 @@ async def monitor_orders():
     """
     Кожні 10с перевіряємо активні ордери.
     Якщо один із пари TP/SL закрився — відміняємо інший і (якщо autotrade) перезапускаємо цикл.
-    Також, якщо autotrade ON і немає активних/відстежуваних ордерів — автозапуск:
+    Також, якщо autotrейд ON і немає активних/відстежуваних ордерів — автозапуск:
       1) спроба старту від наявних монет (TP/SL без купівлі),
       2) якщо холдингів нема — fallback на купівлю за USDT.
+      3) >>> REBUY FEATURE: після TP можемо ставити лімітний відкуп нижче TP
     """
     while True:
         try:
@@ -679,18 +736,42 @@ async def monitor_orders():
                         chat_id=cfg.get("chat_id", 0) or 0,
                         text=f"✅ Ордер {finished_any['id']} ({market}, {finished_any['type']}) закрито!"
                     )
+                    # Cкасувати інші з пари (як і раніше)
                     for entry in list(cfg["orders"]):
                         if entry["id"] != finished_any["id"]:
                             await cancel_order(market, order_id=entry["id"])
                     cfg["orders"].clear()
                     save_markets()
 
+                    # >>> REBUY FEATURE: умовна логіка після закриття
+                    handled = False
                     if cfg.get("autotrade"):
-                        await bot.send_message(
-                            chat_id=cfg.get("chat_id", 0) or 0,
-                            text=f"♻️ Автотрейд {market}: нова угода на {cfg['buy_usdt']} USDT"
-                        )
-                        await start_new_trade(market, cfg)
+                        if finished_any.get("type") == "tp" and float(cfg.get("rebuy_pct", 0) or 0) > 0:
+                            ref = cfg.get("last_tp_price") or (await get_last_price(market))
+                            oid = await place_limit_buy_at_discount(market, cfg, float(ref or 0))
+                            if oid:
+                                await bot.send_message(
+                                    chat_id=cfg.get("chat_id", 0) or 0,
+                                    text=f"🔻 {market}: лімітний відкуп на {cfg['rebuy_pct']}% нижче TP виставлено (order {oid})"
+                                )
+                                handled = True
+                        elif finished_any.get("type") == "rebuy":
+                            # купівля відбулась по ліміту — ставимо TP/SL від холдингів
+                            ok = await place_tp_sl_from_holdings(market, cfg)
+                            if ok:
+                                await bot.send_message(
+                                    chat_id=cfg.get("chat_id", 0) or 0,
+                                    text=f"🎯 {market}: після відкупу виставлено TP/SL від холдингів"
+                                )
+                                handled = True
+
+                        if not handled:
+                            # стара поведінка (ринковий рестарт циклу)
+                            await bot.send_message(
+                                chat_id=cfg.get("chat_id", 0) or 0,
+                                text=f"♻️ Автотрейд {market}: нова угода на {cfg['buy_usdt']} USDT"
+                            )
+                            await start_new_trade(market, cfg)
 
                 # --- АВТОСТАРТ ВІД НАЯВНИХ МОНЕТ / FALLBACK НА USDT ---
                 if cfg.get("autotrade"):
