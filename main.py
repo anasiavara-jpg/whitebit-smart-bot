@@ -226,6 +226,51 @@ def quantize_price(market: str, price: float) -> Decimal:
     step = step_from_precision(rules["price_precision"])
     return (Decimal(str(price)) // step) * step
 
+def ensure_minima_for_order(market: str, side: str, price: Optional[float],
+                            amount_base: Optional[Decimal], amount_quote: Optional[Decimal]):
+    """
+    Повертає (amount_base, amount_quote) з урахуванням мінімалок:
+      - min_amount (BASE)
+      - min_total  (QUOTE = price * amount_base)
+
+    Для market BUY керуємось amount_quote.
+    Для limit/SELL — перевіряємо і amount, і total (якщо відома price).
+    """
+    rules = get_rules(market)
+    min_amount = rules.get("min_amount")  # Decimal | None
+    min_total  = rules.get("min_total")   # Decimal | None
+
+    ap = step_from_precision(rules["amount_precision"])
+    pp = step_from_precision(rules["price_precision"])
+
+    if side.lower() == "buy":
+        # Market BUY: важлива сума в QUOTE
+        if amount_quote is not None and min_total:
+            if amount_quote < min_total:
+                adj = (min_total * Decimal("1.001"))
+                # Квантуємо умовно кроком ціни (як крок QUOTE)
+                adj = (adj // pp) * pp
+                if adj <= 0:
+                    adj = pp
+                amount_quote = adj
+        return (amount_base, amount_quote)
+
+    # SELL або LIMIT (коли є price і amount_base)
+    if price and amount_base is not None:
+        if min_amount and amount_base < min_amount:
+            amount_base = ((min_amount // ap) * ap) if min_amount > 0 else ap
+
+        if min_total:
+            total = Decimal(str(price)) * amount_base
+            if total < min_total:
+                need_base = (min_total / Decimal(str(price)))
+                need_base = (need_base // ap) * ap
+                if need_base <= 0:
+                    need_base = ap
+                if need_base > amount_base:
+                    amount_base = need_base
+
+    return (amount_base, amount_quote)
 # ---------------- WHITEBIT API WRAPPERS ----------------
 async def get_balance() -> dict:
     data = await private_post("/api/v4/trade-account/balance")
@@ -236,7 +281,7 @@ async def place_market_order(market: str, side: str, amount: float) -> dict:
     """
     BUY  -> amount = сума у QUOTE (USDT)
     SELL -> amount = кількість у BASE
-    Підганяємо під прецизійність біржі.
+    Підганяємо під прецизійність біржі + мінімальні ліміти.
     """
     body = {"market": market, "side": side, "type": "market"}
 
@@ -246,11 +291,22 @@ async def place_market_order(market: str, side: str, amount: float) -> dict:
         q_amount = (Decimal(str(amount)) // quote_step) * quote_step
         if q_amount <= 0:
             q_amount = quote_step
+
+        # >>> Перевіряємо мінімальні значення (min_total)
+        _, q_amount = ensure_minima_for_order(market, "buy", price=None,
+                                              amount_base=None, amount_quote=q_amount)
+
         body["amount"] = float(q_amount)
+
     else:
         a = quantize_amount(market, amount)
         if a <= 0:
             a = step_from_precision(get_rules(market)["amount_precision"])
+
+        # >>> Перевіряємо мінімальні значення (min_amount)
+        a, _ = ensure_minima_for_order(market, "sell", price=None,
+                                       amount_base=a, amount_quote=None)
+
         body["amount"] = float(a)
 
     logging.info(
@@ -271,6 +327,10 @@ async def place_limit_order(
     if p <= 0:
         p = step_from_precision(get_rules(market)["price_precision"])
 
+    # >>> Перевіряємо мінімальні значення (min_total, min_amount)
+    a, _ = ensure_minima_for_order(market, side, price=float(p),
+                                   amount_base=a, amount_quote=None)
+
     body = {
         "market": market,
         "side": side,
@@ -284,6 +344,7 @@ async def place_limit_order(
         body["postOnly"] = bool(post_only)
     if stp:
         body["stp"] = stp
+
     return await private_post("/api/v4/order/new", body)
 
 async def active_orders(market: Optional[str] = None) -> dict:
@@ -406,17 +467,24 @@ async def settp_cmd(message: types.Message):
     try:
         _, market, percent = message.text.split()
         market = market.upper().replace("/", "_")
+        if market not in markets:
+            await message.answer("❌ Спочатку додай ринок через /market.")
+            return
         markets[market]["tp"] = float(percent)
         save_markets()
         await message.answer(f"📈 TP для {market}: {percent}%")
     except Exception:
         await message.answer("⚠️ Використання: /settp BTC/USDT 5")
 
+
 @dp.message(Command("setsl"))
 async def setsl_cmd(message: types.Message):
     try:
         _, market, percent = message.text.split()
         market = market.upper().replace("/", "_")
+        if market not in markets:
+            await message.answer("❌ Спочатку додай ринок через /market.")
+            return
         markets[market]["sl"] = float(percent)
         save_markets()
         await message.answer(f"📉 SL для {market}: {percent}%")
@@ -479,6 +547,26 @@ async def autotrade_cmd(message: types.Message):
     except Exception:
         await message.answer("⚠️ Використання: /autotrade BTC/USDT on|off")
 
+@dp.message(Command("status"))
+async def status_cmd(message: types.Message):
+    if not markets:
+        await message.answer("ℹ️ Активних ринків немає.")
+        return
+    text = "📊 <b>Статус</b>:\n"
+    for m, cfg in markets.items():
+        tp = f"{cfg['tp']}%" if cfg.get("tp") is not None else "—"
+        sl = f"{cfg['sl']}%" if cfg.get("sl") is not None else "—"
+        text += (
+            f"\n{m}:\n"
+            f" TP: {tp}\n"
+            f" SL: {sl}\n"
+            f" Buy: {cfg['buy_usdt']} USDT\n"
+            f" Автотрейд: {cfg['autotrade']}\n"
+            f" Rebuy: {cfg.get('rebuy_pct', 0)}%\n"
+            f" Ордерів: {len(cfg.get('orders', []))}\n"
+        )
+    await message.answer(text)
+
 # ---------------- TRADE LOGIC ----------------
 def _extract_order_id(resp: dict) -> Optional[int]:
     if not isinstance(resp, dict):
@@ -534,7 +622,13 @@ async def start_new_trade(market: str, cfg: dict):
     except Exception:
         usdt = 0.0
 
-    spend = float(cfg.get("buy_usdt", 10.0))
+        spend = float(cfg.get("buy_usdt", 10.0))
+
+    # >>> Перевіряємо мінімальну суму для ринку (min_total)
+    _, spend_dec = ensure_minima_for_order(market, "buy", price=None,
+                                           amount_base=None, amount_quote=Decimal(str(spend)))
+    spend = float(spend_dec)
+
     if usdt < spend:
         logging.warning(f"Недостатньо USDT для {market}. Є {usdt}, треба {spend}.")
         return
