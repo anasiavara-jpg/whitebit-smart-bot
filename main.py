@@ -226,21 +226,15 @@ def quantize_price(market: str, price: float) -> Decimal:
     step = step_from_precision(rules["price_precision"])
     return (Decimal(str(price)) // step) * step
 
-def ensure_minima_for_order(
-    market: str,
-    side: str,
-    price: Optional[float],
-    amount_base: Optional[Decimal],
-    amount_quote: Optional[Decimal],
-):
+def ensure_minima_for_order(market: str, side: str, price: Optional[float],
+                            amount_base: Optional[Decimal], amount_quote: Optional[Decimal]):
     """
     Повертає (amount_base, amount_quote) з урахуванням мінімалок:
       - min_amount (BASE)
       - min_total  (QUOTE = price * amount_base)
 
-    Випадки:
-      - MARKET BUY: перевіряємо суму в QUOTE (amount_quote) проти min_total.
-      - LIMIT BUY/SELL: якщо є price та amount_base — перевіряємо і min_amount, і min_total.
+    Для MARKET BUY керуємось amount_quote (price відсутня).
+    Для LIMIT (buy/sell) — перевіряємо і amount, і total (бо price відома).
     """
     rules = get_rules(market)
     min_amount = rules.get("min_amount")  # Decimal | None
@@ -249,19 +243,20 @@ def ensure_minima_for_order(
     ap = step_from_precision(rules["amount_precision"])
     pp = step_from_precision(rules["price_precision"])
 
-    # 1) MARKET BUY — немає price, керуємось QUOTE
-    if price is None and side.lower() == "buy":
+    # MARKET BUY: керуємось лише сумою в QUOTE (price немає)
+    if side.lower() == "buy" and price is None:
         if amount_quote is not None and min_total:
             if amount_quote < min_total:
                 adj = (min_total * Decimal("1.001"))
-                adj = (adj // pp) * pp  # квантуємо як крок QUOTE
+                # Квантуємо умовно кроком ціни (як крок QUOTE)
+                adj = (adj // pp) * pp
                 if adj <= 0:
                     adj = pp
                 amount_quote = adj
         return (amount_base, amount_quote)
 
-    # 2) LIMIT (і BUY, і SELL) — маємо price і amount_base
-    if price is not None and amount_base is not None:
+    # SELL або LIMIT BUY (price відома): перевіряємо min_amount і min_total
+    if price and amount_base is not None:
         if min_amount and amount_base < min_amount:
             amount_base = ((min_amount // ap) * ap) if min_amount > 0 else ap
 
