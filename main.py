@@ -70,7 +70,7 @@ def _pick_markets_path() -> str:
 
 # WhiteBIT base (важливо: без /api/v4 у BASE_URL)
 BASE_URL = "https://whitebit.com"
-MARKETS_FILE = "markets.json"
+MARKETS_FILE = _pick_markets_path()
 markets: Dict[str, Dict[str, Any]] = {}
 
 # Кеш правил ринків (price/amount precision, min тощо)
