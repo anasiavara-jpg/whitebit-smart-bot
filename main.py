@@ -1096,16 +1096,54 @@ async def restart_cmd(message: types.Message):
 # ---------------- MONITOR ----------------
 async def monitor_orders():
     """
-    Кожні 10с перевіряємо активні ордери.
-    Якщо один із пари TP/SL закрився — відміняємо інший і (якщо autotrade) перезапускаємо цикл.
-    Якщо autотрейд ON і немає активних/відстежуваних ордерів — автозапуск:
-      1) старт від наявних монет (TP/SL без купівлі),
-      2) якщо холдингів нема — fallback на купівлю за USDT,
-      3) після TP — опційний ребай на знижці.
+    Частий монітор: 2с.
+    Логіка:
+      - Trigger/Trailing SL: якщо ціна <= поріг — скасувати ліміти і продати ринком.
+      - Якщо ордер закрився: прибрати пару, зробити ребай після TP (опційно), або ping-pong для скальпу.
+      - Autostart: якщо пусто — спробувати старт від холдингів; якщо нема — купівля за USDT;
+        якщо увімкнено scalp — сформувати сітку.
     """
     while True:
         try:
             for market, cfg in list(markets.items()):
+                # --- HARD/TRAILING SL ---
+                try:
+                    sl_pct = float(cfg.get("sl") or 0)
+                except Exception:
+                    sl_pct = 0.0
+                if sl_pct > 0:
+                    lp = await get_last_price(market)
+                    if lp:
+                        mode = (cfg.get("sl_mode") or "trigger").lower()
+                        if mode == "trailing":
+                            peak = float(cfg.get("peak") or 0)
+                            if lp > (peak or 0):
+                                cfg["peak"] = lp
+                                save_markets()
+                        threshold = None
+                        if mode == "trigger" and cfg.get("entry_price"):
+                            threshold = float(cfg["entry_price"]) * (1 - sl_pct / 100)
+                        elif mode == "trailing" and cfg.get("peak"):
+                            threshold = float(cfg["peak"]) * (1 - sl_pct / 100)
+                        if threshold and lp <= threshold:
+                            acts = await active_orders(market)
+                            for o in acts.get("orders", []):
+                                oid = o.get("orderId") or o.get("id")
+                                if oid:
+                                    await cancel_order(market, order_id=int(oid))
+                            cfg["orders"].clear()
+                            save_markets()
+                            base_av = await get_base_available(market)
+                            if base_av > 0:
+                                await place_market_order(market, "sell", float(base_av))
+                                if cfg.get("chat_id"):
+                                    await bot.send_message(cfg["chat_id"], f"🛑 {market}: SL спрацював, продано ринком.")
+                            cfg["entry_price"] = None
+                            cfg["peak"] = None
+                            save_markets()
+                            continue  # до наступного ринку
+
+                # --- активні ордери ---
                 act = await active_orders(market)
                 active_ids = set()
                 if isinstance(act, dict):
@@ -1148,7 +1186,6 @@ async def monitor_orders():
                             ref = cfg.get("last_tp_price") or (await get_last_price(market))
                             oid = await place_limit_buy_at_discount(market, cfg, float(ref or 0))
                             if oid:
-                                chat_id = cfg.get("chat_id")
                                 if chat_id:
                                     await bot.send_message(
                                         chat_id=chat_id,
@@ -1158,16 +1195,19 @@ async def monitor_orders():
                         elif finished_any.get("type") == "rebuy":
                             ok = await place_tp_sl_from_holdings(market, cfg)
                             if ok:
-                                chat_id = cfg.get("chat_id")
                                 if chat_id:
                                     await bot.send_message(
                                         chat_id=chat_id,
-                                        text=f"🎯 {market}: після відкупу виставлено TP/SL від холдингів"
+                                        text=f"🎯 {market}: після відкупу виставлено TP від холдингів"
                                     )
                                 handled = True
 
+                        # >>> ping-pong для скальпу
+                        if cfg.get("scalp") and str(finished_any.get("type", "")).startswith("scalp"):
+                            await on_fill_pingpong(market, cfg, finished_any)
+                            handled = True
+
                         if not handled:
-                            chat_id = cfg.get("chat_id")
                             if chat_id:
                                 await bot.send_message(
                                     chat_id=chat_id,
@@ -1175,30 +1215,37 @@ async def monitor_orders():
                                 )
                             await start_new_trade(market, cfg)
 
-                # --- АВТОСТАРТ ВІД НАЯВНИХ МОНЕТ / FALLBACK НА USDT ---
+                # --- АВТОСТАРТ / FALLBACK / SCALP GRID ---
                 if cfg.get("autotrade"):
                     no_tracked = len(cfg.get("orders", [])) == 0
                     no_active = (len(active_ids) == 0)
                     if no_tracked and no_active:
-                        # 1) спроба старту без купівлі — з холдингів
+                        # якщо увімкнено скальп — спочатку сформуємо сітку
+                        if cfg.get("scalp"):
+                            lp = await get_last_price(market)
+                            if lp:
+                                await seed_scalp_grid(market, cfg, lp)
+                                if cfg.get("chat_id"):
+                                    await bot.send_message(
+                                        cfg["chat_id"], f"▶️ {market}: запущено мікро-скальп сітку"
+                                    )
+                                continue
+                        # 1) старт від холдингів
                         started_from_holdings = await place_tp_sl_from_holdings(market, cfg)
                         if started_from_holdings:
-                            chat_id = cfg.get("chat_id")
-                            if chat_id:
+                            if cfg.get("chat_id"):
                                 await bot.send_message(
-                                    chat_id=chat_id,
-                                    text=f"▶️ {market}: старт від наявних монет (TP/SL виставлено)"
+                                    cfg["chat_id"], f"▶️ {market}: старт від наявних монет (TP виставлено)"
                                 )
                         else:
-                            # 2) fallback: купівля за USDT, якщо достатньо коштів
+                            # 2) fallback: купівля за USDT
                             usdt = await get_usdt_available()
                             spend = Decimal(str(cfg.get("buy_usdt", 10)))
                             spend_adj = (spend * Decimal("0.998")).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
                             if usdt >= spend_adj and float(spend_adj) > 0:
-                                chat_id = cfg.get("chat_id")
-                                if chat_id:
+                                if cfg.get("chat_id"):
                                     await bot.send_message(
-                                        chat_id=chat_id,
+                                        cfg["chat_id"],
                                         text=f"▶️ {market}: автостарт купівлі на {spend_adj} USDT (бо холдингів немає)"
                                     )
                                 await start_new_trade(market, cfg)
@@ -1208,8 +1255,7 @@ async def monitor_orders():
         except Exception as e:
             logging.error(f"Monitor error: {e}")
 
-        await asyncio.sleep(10)
-
+        await asyncio.sleep(2)  # було 10
 # ---------------- RUN ----------------
 async def main():
     load_markets()
