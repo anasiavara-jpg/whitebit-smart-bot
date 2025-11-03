@@ -534,6 +534,11 @@ async def help_cmd(message: types.Message):
         "/restart — перезапуск логіки\n"
         "/autotrade BTC/USDT on|off — увімк/вимк автотрейд\n"
         "/setrebuy BTC/USDT 2 — % відкупу нижче TP (0 = вимкнено)"
+                "\n"
+        "/scalp BTC/USDT on|off — мікро-скальп (сітка buy/sell)\n"
+        "/settick BTC/USDT 0.25 — крок сітки у %\n"
+        "/setlevels BTC/USDT 3 — кількість рівнів сітки\n"
+        "/slmode BTC/USDT trigger|trailing — тип SL (ринковий тригер або трейлінг)"
     )
 
 @dp.message(Command("balance"))
