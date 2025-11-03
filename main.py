@@ -58,8 +58,16 @@ def _normalize_market_cfg(cfg: dict) -> dict:
     cfg.setdefault("chat_id", None)
     cfg.setdefault("rebuy_pct", 0.0)
     cfg.setdefault("last_tp_price", None)
+    # >>> нове: мікро-скальп і режими SL
+    cfg.setdefault("scalp", False)
+    cfg.setdefault("tick_pct", 0.25)
+    cfg.setdefault("levels", 3)
+    cfg.setdefault("maker_only", True)
+    cfg.setdefault("sl_mode", "trigger")   # "trigger" | "trailing"
+    cfg.setdefault("entry_price", None)
+    cfg.setdefault("peak", None)
     return cfg
-
+    
 def load_markets():
     global markets
     if os.path.exists(MARKETS_FILE):
