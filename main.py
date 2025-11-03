@@ -1,4 +1,4 @@
-# main.py — WhiteBIT Smart Bot (v4-ready, clean + market rules/precision + holdings autostart + rebuy-after-TP, consolidated)
+# main.py — WhiteBIT Smart Bot (v4-ready, hardened + market rules/precision + holdings autostart + rebuy-after-TP, consolidated)
 import asyncio
 import base64
 import hashlib
@@ -68,7 +68,7 @@ def _normalize_market_cfg(cfg: dict) -> dict:
     cfg.setdefault("peak", None)
     cfg.setdefault("scalp_seeded_at", 0)  # ms, коли востаннє створили сітку
     return cfg
-    
+
 def load_markets():
     global markets
     if os.path.exists(MARKETS_FILE):
@@ -135,29 +135,56 @@ def _payload_and_headers(path: str, extra_body: Optional[dict] = None) -> tuple[
     }
     return body_bytes, headers
 
-# ---------------- HTTP (WhiteBIT v4) ----------------
+# ---------------- HTTP (WhiteBIT v4) with retry/backoff ----------------
 async def public_get(path: str) -> dict:
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(BASE_URL + path)
+    url = BASE_URL + path
+    for attempt in range(3):
         try:
-            return r.json()
-        except Exception:
-            logging.error(f"Помилка декодування public відповіді: {r.text}")
-            return {"error": r.text}
+            async with httpx.AsyncClient(timeout=30, http2=True) as client:
+                r = await client.get(url)
+            if r.status_code == 429:
+                await asyncio.sleep(0.5 + 0.5 * attempt)
+                continue
+            if r.status_code >= 500:
+                logging.warning(f"[public_get] {r.status_code} {url}")
+                await asyncio.sleep(0.3 * (attempt + 1))
+                continue
+            try:
+                return r.json()
+            except Exception:
+                logging.error(f"Помилка декодування public відповіді ({r.status_code}): {r.text}")
+                return {"error": r.text}
+        except Exception as e:
+            logging.error(f"[public_get] {url} error: {e}")
+            await asyncio.sleep(0.3 * (attempt + 1))
+    return {"error": "public_get retries exceeded"}
 
 async def private_post(path: str, extra_body: Optional[dict] = None) -> dict:
     body_bytes, headers = _payload_and_headers(path, extra_body)
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(BASE_URL + path, headers=headers, content=body_bytes)
+    url = BASE_URL + path
+    for attempt in range(3):
         try:
-            data = r.json()
-        except Exception:
-            logging.error(f"Помилка декодування private відповіді: {r.text}")
-            return {"error": r.text}
-
-        if isinstance(data, dict) and (data.get("success") is False) and "message" in data:
-            logging.error(f"WhiteBIT error: {data.get('message')}")
-        return data
+            async with httpx.AsyncClient(timeout=30, http2=True) as client:
+                r = await client.post(url, headers=headers, content=body_bytes)
+            if r.status_code == 429:
+                await asyncio.sleep(0.5 + 0.5 * attempt)
+                continue
+            if r.status_code >= 500:
+                logging.warning(f"[private_post] {r.status_code} {url}")
+                await asyncio.sleep(0.3 * (attempt + 1))
+                continue
+            try:
+                data = r.json()
+            except Exception:
+                logging.error(f"Помилка декодування private відповіді ({r.status_code}): {r.text}")
+                return {"error": r.text}
+            if isinstance(data, dict) and (data.get("success") is False) and "message" in data:
+                logging.error(f"WhiteBIT error: {data.get('message')}")
+            return data
+        except Exception as e:
+            logging.error(f"[private_post] {url} error: {e}")
+            await asyncio.sleep(0.3 * (attempt + 1))
+    return {"error": "private_post retries exceeded"}
 
 # ---------------- MARKET RULES ----------------
 async def load_market_rules():
@@ -251,6 +278,14 @@ def get_rules(market: str) -> Dict[str, Any]:
 def step_from_precision(prec: int) -> Decimal:
     return Decimal(1) / (Decimal(10) ** int(prec))
 
+def quote_step_from_rules(market: str) -> Decimal:
+    """
+    Крок для суми у QUOTE. На WhiteBIT зазвичай money_precision == price_precision,
+    але виділяємо окремо для ясності і можливих майбутніх змін.
+    """
+    rules = get_rules(market)
+    return step_from_precision(rules["price_precision"])
+
 def ceil_to_step(x: Decimal, step: Decimal) -> Decimal:
     """
     Підняти число x до найближчого кратного step (CEIL).
@@ -341,8 +376,7 @@ async def place_market_order(market: str, side: str, amount: float) -> dict:
     body = {"market": market, "side": side, "type": "market"}
 
     if side.lower() == "buy":
-        rules = get_rules(market)
-        quote_step = step_from_precision(rules["price_precision"])  # money/price precision
+        quote_step = quote_step_from_rules(market)
         q_amount = (Decimal(str(amount)) // quote_step) * quote_step
         if q_amount <= 0:
             q_amount = quote_step
@@ -415,10 +449,18 @@ async def active_orders(market: Optional[str] = None) -> dict:
             lst = d.get("orders")
             if isinstance(lst, list):
                 return {"orders": lst}
+            # інші поширені форми
+            rec = d.get("records")
+            if isinstance(rec, list):
+                return {"orders": rec}
             for k in ("result", "data"):
                 v = d.get(k)
                 if isinstance(v, list):
                     return {"orders": v}
+                if isinstance(v, dict):
+                    vv = v.get("data") or v.get("orders") or v.get("records")
+                    if isinstance(vv, list):
+                        return {"orders": vv}
         return None
 
     norm = _normalize(data)
@@ -434,7 +476,7 @@ async def active_orders(market: Optional[str] = None) -> dict:
     logging.warning(f"[active_orders] unexpected payloads: /orders={type(data)}, /order/active={type(alt)}")
     return {"orders": []}
 
-async def cancel_order(market: str, order_id: Optional[int] = None, client_order_id: Optional[str] = None) -> dict:
+async def cancel_order(market: str, order_id: Optional[str] = None, client_order_id: Optional[str] = None) -> dict:
     body = {"market": market}
     if client_order_id:
         body["clientOrderId"] = str(client_order_id)
@@ -590,7 +632,7 @@ async def market_cmd(message: types.Message):
         await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
     except Exception:
         await message.answer("⚠️ Використання: /market BTC/USDT")
-        
+
 @dp.message(Command("settp"))
 async def settp_cmd(message: types.Message):
     try:
@@ -794,42 +836,43 @@ async def cancel_cmd(message: types.Message):
         for o in lst:
             oid = o.get("orderId") or o.get("id")
             if oid:
-                res = await cancel_order(market, order_id=int(oid))
+                res = await cancel_order(market, order_id=str(oid))
                 if isinstance(res, dict) and res.get("success") is not False:
                     cnt += 1
+                await asyncio.sleep(0.15)  # легкий throttling
         await message.answer(f"🧹 Скасовано {cnt} ордер(и/ів) на {market}.")
         return
 
-    if target and target.isdigit():
-        res = await cancel_order(market, order_id=int(target))
+    if target:
+        res = await cancel_order(market, order_id=str(target))
         ok = isinstance(res, dict) and res.get("success") is not False
         await message.answer("✅ Скасовано." if ok else f"❌ Не вдалось скасувати #{target}.")
     else:
         await message.answer("⚠️ Використання: /cancel BTC/USDT 123456 або /cancel BTC/USDT all")
 
-VERSION = "v4.1.1-consolidated"
+VERSION = "v4.1.2-hardened"
 @dp.message(Command("version"))
 async def version_cmd(message: types.Message):
     await message.answer(f"🤖 Bot version: {VERSION}")
 
 # ---------------- TRADE LOGIC ----------------
-def _extract_order_id(resp: dict) -> Optional[int]:
+def _extract_order_id(resp: dict) -> Optional[str]:
     if not isinstance(resp, dict):
         return None
     if "orderId" in resp:
         try:
-            return int(resp["orderId"])
+            return str(resp["orderId"])
         except Exception:
             return None
     if "id" in resp:
         try:
-            return int(resp["id"])
+            return str(resp["id"])
         except Exception:
             return None
     return None
 
 # >>> REBUY FEATURE: допоміжна функція виставити лімітний BUY на знижці від довідкової ціни
-async def place_limit_buy_at_discount(market: str, cfg: dict, ref_price: float) -> Optional[int]:
+async def place_limit_buy_at_discount(market: str, cfg: dict, ref_price: float) -> Optional[str]:
     try:
         pct = float(cfg.get("rebuy_pct", 0) or 0)
     except Exception:
@@ -984,7 +1027,7 @@ async def start_new_trade(market: str, cfg: dict):
         return
 
     # 5) Створення TP/SL як окремих лімітів
-        # >>> NEW: референт для SL (trigger/trailing)
+    # >>> NEW: референт для SL (trigger/trailing)
     cfg["entry_price"] = float(last_price)
     cfg["peak"] = float(last_price)
 
@@ -1136,7 +1179,7 @@ async def monitor_orders():
                             for o in acts.get("orders", []):
                                 oid = o.get("orderId") or o.get("id")
                                 if oid:
-                                    await cancel_order(market, order_id=int(oid))
+                                    await cancel_order(market, order_id=str(oid))
 
                             cfg["orders"].clear()
                             save_markets()
@@ -1163,16 +1206,16 @@ async def monitor_orders():
                             oid = None
                             if isinstance(o, dict):
                                 if "orderId" in o:
-                                    oid = int(str(o["orderId"]))
+                                    oid = str(o["orderId"])
                                 elif "id" in o:
-                                    oid = int(str(o["id"]))
+                                    oid = str(o["id"])
                             if oid is not None:
                                 active_ids.add(oid)
 
                 # визначаємо, який з треканих ордерів заповнився
                 finished_any = None
                 for entry in list(cfg.get("orders", [])):
-                    if entry["id"] not in active_ids:
+                    if str(entry["id"]) not in active_ids:
                         finished_any = entry
                         break
 
@@ -1190,7 +1233,7 @@ async def monitor_orders():
                         # прибираємо тільки заповнений ордер
                         cfg["orders"] = [
                             e for e in cfg.get("orders", [])
-                            if e.get("id") != finished_any["id"]
+                            if str(e.get("id")) != str(finished_any["id"])
                         ]
                         save_markets()
                         # запускаємо ping-pong тільки для цього ордера
@@ -1206,8 +1249,9 @@ async def monitor_orders():
 
                     # скасувати інші ордери з цієї пари
                     for entry in list(cfg.get("orders", [])):
-                        if entry["id"] != finished_any["id"]:
-                            await cancel_order(market, order_id=entry["id"])
+                        if str(entry["id"]) != str(finished_any["id"]):
+                            await cancel_order(market, order_id=str(entry["id"]))
+                            await asyncio.sleep(0.1)
 
                     cfg["orders"].clear()
                     save_markets()
@@ -1248,7 +1292,7 @@ async def monitor_orders():
                                 )
                             await start_new_trade(market, cfg)
 
-                # --- АВТОСТАРТ / FALLBACK / SCALP GRID ---
+                # --- АВТОСТАРТ / FALLBACK / SCALП GRID ---
                 if cfg.get("autotrade"):
                     no_tracked = len(cfg.get("orders", [])) == 0
                     no_active = (len(active_ids) == 0)
@@ -1293,6 +1337,7 @@ async def monitor_orders():
             logging.error(f"Monitor error: {e}")
 
         await asyncio.sleep(2)  # було 10
+
 # ---------------- RUN ----------------
 async def main():
     load_markets()
