@@ -575,12 +575,21 @@ async def market_cmd(message: types.Message):
             "chat_id": message.chat.id,
             "rebuy_pct": 0.0,
             "last_tp_price": None,
+
+            # ↓↓↓ нові поля для скальпу та SL-режимів ↓↓↓
+            "scalp": False,
+            "tick_pct": 0.25,
+            "levels": 3,
+            "maker_only": True,
+            "sl_mode": "trigger",   # "trigger" або "trailing"
+            "entry_price": None,
+            "peak": None,
         }
         save_markets()
         await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
     except Exception:
         await message.answer("⚠️ Використання: /market BTC/USDT")
-
+        
 @dp.message(Command("settp"))
 async def settp_cmd(message: types.Message):
     try:
