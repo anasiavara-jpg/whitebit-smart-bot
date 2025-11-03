@@ -1166,41 +1166,41 @@ async def monitor_orders():
                         finished_any = entry
                         break
 
-                if finished_any:
-    chat_id = cfg.get("chat_id")
+                                if finished_any:
+                    chat_id = cfg.get("chat_id")
 
-    # 🔧 Якщо скальп: НЕ чистимо всю сітку і НЕ скасовуємо інші ордери
-    is_scalp = cfg.get("scalp") and str(finished_any.get("type", "")).startswith("scalp")
-    if is_scalp:
-        if chat_id:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"✅ Ордер {finished_any['id']} ({market}, {finished_any['type']}) закрито!"
-            )
-        # прибираємо тільки заповнений ордер
-        cfg["orders"] = [
-            e for e in cfg.get("orders", [])
-            if e.get("id") != finished_any["id"]
-        ]
-        save_markets()
-        # запускаємо ping-pong тільки для цього ордера
-        await on_fill_pingpong(market, cfg, finished_any)
-        continue  # не запускаємо автотрейд нижче
+                    # 🔧 Якщо скальп: не чистимо всю сітку і не скасовуємо інші ордери
+                    is_scalp = cfg.get("scalp") and str(finished_any.get("type", "")).startswith("scalp")
+                    if is_scalp:
+                        if chat_id:
+                            await bot.send_message(
+                                chat_id=chat_id,
+                                text=f"✅ Ордер {finished_any['id']} ({market}, {finished_any['type']}) закрито!"
+                            )
+                        # прибираємо лише заповнений ордер
+                        cfg["orders"] = [
+                            e for e in cfg.get("orders", [])
+                            if e.get("id") != finished_any["id"]
+                        ]
+                        save_markets()
+                        # запускаємо ping-pong тільки для цього ордера
+                        await on_fill_pingpong(market, cfg, finished_any)
+                        continue  # не запускаємо автотрейд нижче
 
-    # 🧹 Звичайна логіка (НЕ скальп)
-    if chat_id:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=f"✅ Ордер {finished_any['id']} ({market}, {finished_any['type']}) закрито!"
-        )
+                    # 🧹 Звичайна логіка (НЕ скальп)
+                    if chat_id:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=f"✅ Ордер {finished_any['id']} ({market}, {finished_any['type']}) закрито!"
+                        )
 
-    # скасувати інші ордери з цієї пари
-    for entry in list(cfg.get("orders", [])):
-        if entry["id"] != finished_any["id"]:
-            await cancel_order(market, order_id=entry["id"])
+                    # скасувати інші ордери з цієї пари
+                    for e in list(cfg.get("orders", [])):
+                        if e["id"] != finished_any["id"]:
+                            await cancel_order(market, order_id=e["id"])
 
-    cfg["orders"].clear()
-    save_markets()
+                    cfg["orders"].clear()
+                    save_markets()
 
                     # REBUY/рестарт логіка
                     handled = False
@@ -1225,11 +1225,6 @@ async def monitor_orders():
                                     )
                                 handled = True
 
-                        # >>> ping-pong для скальпу
-                        if cfg.get("scalp") and str(finished_any.get("type", "")).startswith("scalp"):
-                            await on_fill_pingpong(market, cfg, finished_any)
-                            handled = True
-
                         if not handled:
                             if chat_id:
                                 await bot.send_message(
@@ -1243,20 +1238,20 @@ async def monitor_orders():
                     no_tracked = len(cfg.get("orders", [])) == 0
                     no_active = (len(active_ids) == 0)
                     if no_tracked and no_active:
-                        # якщо увімкнено скальп — спочатку сформуємо сітку
-                   if cfg.get("scalp"):
-    lp = await get_last_price(market)
-    now = now_ms()
-    # не сідимо частіше ніж раз на 60 сек
-    if lp and (now - int(cfg.get("scalp_seeded_at", 0)) > 60_000):
-        await seed_scalp_grid(market, cfg, lp)
-        cfg["scalp_seeded_at"] = now
-        save_markets()
-        if cfg.get("chat_id"):
-            await bot.send_message(
-                cfg["chat_id"], f"▶️ {market}: запущено мікро-скальп сітку"
-            )
-        continue
+                        # якщо увімкнено скальп — спочатку сформуємо сітку (не частіше 1 раз/60с)
+                        if cfg.get("scalp"):
+                            lp = await get_last_price(market)
+                            now = now_ms()
+                            if lp and (now - int(cfg.get("scalp_seeded_at", 0)) > 60_000):
+                                await seed_scalp_grid(market, cfg, lp)
+                                cfg["scalp_seeded_at"] = now
+                                save_markets()
+                                if cfg.get("chat_id"):
+                                    await bot.send_message(
+                                        cfg["chat_id"], f"▶️ {market}: запущено мікро-скальп сітку"
+                                    )
+                                continue
+
                         # 1) старт від холдингів
                         started_from_holdings = await place_tp_sl_from_holdings(market, cfg)
                         if started_from_holdings:
