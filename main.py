@@ -864,6 +864,71 @@ async def place_limit_buy_at_discount(market: str, cfg: dict, ref_price: float) 
         save_markets()
     return oid
 
+def _pp(market: str, cfg: dict) -> tuple[float, int]:
+    return float(cfg.get("tick_pct", 0.25)), int(cfg.get("levels", 3))
+
+async def _place_maker_limit(market, side, price, amount, tag):
+    oid = _extract_order_id(
+        await place_limit_order(market, side, price, amount, client_order_id=tag, post_only=True)
+    )
+    return oid
+
+async def seed_scalp_grid(market: str, cfg: dict, ref_price: float):
+    tick, levels = _pp(market, cfg)
+    spend = Decimal(str(cfg.get("buy_usdt", 5)))
+    base_av = await get_base_available(market)
+    ap = step_from_precision(get_rules(market)["amount_precision"])
+    # BUY-сітка
+    for i in range(1, levels + 1):
+        p = float(quantize_price(market, ref_price * (1 - (tick * i) / 100)))
+        amt = quantize_amount(market, float((spend / Decimal(str(p)))))
+        if amt <= 0:
+            amt = ap
+        tag = f"wb-{market}-scalp-buy-{i}-{now_ms()}"
+        oid = await _place_maker_limit(market, "buy", p, float(amt), tag)
+        if oid:
+            cfg.setdefault("orders", []).append({"id": oid, "type": "scalp_buy", "market": market, "price": p, "amount": float(amt)})
+    # SELL-сітка (якщо є холдинги)
+    if base_av > 0:
+        portion = (base_av / Decimal(max(1, levels))).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
+        portion = quantize_amount(market, float(portion))
+        if portion > 0:
+            for i in range(1, levels + 1):
+                p = float(quantize_price(market, ref_price * (1 + (tick * i) / 100)))
+                tag = f"wb-{market}-scalp-sell-{i}-{now_ms()}"
+                oid = await _place_maker_limit(market, "sell", p, float(portion), tag)
+                if oid:
+                    cfg["orders"].append({"id": oid, "type": "scalp_sell", "market": market, "price": p, "amount": float(portion)})
+    save_markets()
+
+async def on_fill_pingpong(market: str, cfg: dict, filled: dict):
+    tick, _ = _pp(market, cfg)
+    typ = filled.get("type")
+    try:
+        price = float(filled.get("price") or 0)
+        amt = float(filled.get("amount") or 0)
+    except Exception:
+        return
+    if price <= 0 or amt <= 0:
+        return
+    if typ == "scalp_buy":
+        cfg["entry_price"] = price
+        p_out = float(quantize_price(market, price * (1 + tick / 100)))
+        tag = f"wb-{market}-pp-sell-{now_ms()}"
+        oid = await _place_maker_limit(market, "sell", p_out, amt, tag)
+        if oid:
+            cfg["orders"].append({"id": oid, "type": "scalp_sell", "market": market, "price": p_out, "amount": amt})
+    elif typ == "scalp_sell":
+        p_in = float(quantize_price(market, price * (1 - tick / 100)))
+        spend = Decimal(str(cfg.get("buy_usdt", 5)))
+        usdt = await get_usdt_available()
+        amt_in = amt if usdt * Decimal("0.999") >= spend else quantize_amount(market, float(spend / Decimal(str(p_in))))
+        tag = f"wb-{market}-pp-buy-{now_ms()}"
+        oid = await _place_maker_limit(market, "buy", p_in, float(amt_in), tag)
+        if oid:
+            cfg["orders"].append({"id": oid, "type": "scalp_buy", "market": market, "price": p_in, "amount": float(amt_in)})
+    save_markets()
+
 async def start_new_trade(market: str, cfg: dict):
     # 1) Баланс до
     balances_before = await get_balance()
