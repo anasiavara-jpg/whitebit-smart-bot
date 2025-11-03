@@ -1167,18 +1167,40 @@ async def monitor_orders():
                         break
 
                 if finished_any:
-                    chat_id = cfg.get("chat_id")
-                    if chat_id:
-                        await bot.send_message(
-                            chat_id=chat_id,
-                            text=f"✅ Ордер {finished_any['id']} ({market}, {finished_any['type']}) закрито!"
-                        )
-                    # скасувати інші з пари
-                    for entry in list(cfg["orders"]):
-                        if entry["id"] != finished_any["id"]:
-                            await cancel_order(market, order_id=entry["id"])
-                    cfg["orders"].clear()
-                    save_markets()
+    chat_id = cfg.get("chat_id")
+
+    # 🔧 Якщо скальп: НЕ чистимо всю сітку і НЕ скасовуємо інші ордери
+    is_scalp = cfg.get("scalp") and str(finished_any.get("type", "")).startswith("scalp")
+    if is_scalp:
+        if chat_id:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"✅ Ордер {finished_any['id']} ({market}, {finished_any['type']}) закрито!"
+            )
+        # прибираємо тільки заповнений ордер
+        cfg["orders"] = [
+            e for e in cfg.get("orders", [])
+            if e.get("id") != finished_any["id"]
+        ]
+        save_markets()
+        # запускаємо ping-pong тільки для цього ордера
+        await on_fill_pingpong(market, cfg, finished_any)
+        continue  # не запускаємо автотрейд нижче
+
+    # 🧹 Звичайна логіка (НЕ скальп)
+    if chat_id:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"✅ Ордер {finished_any['id']} ({market}, {finished_any['type']}) закрито!"
+        )
+
+    # скасувати інші ордери з цієї пари
+    for entry in list(cfg.get("orders", [])):
+        if entry["id"] != finished_any["id"]:
+            await cancel_order(market, order_id=entry["id"])
+
+    cfg["orders"].clear()
+    save_markets()
 
                     # REBUY/рестарт логіка
                     handled = False
