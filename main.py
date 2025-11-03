@@ -983,7 +983,7 @@ async def start_new_trade(market: str, cfg: dict):
         return
 
     # 5) Створення TP/SL як окремих лімітів
-    # >>> NEW: референт для SL (trigger/trailing)
+        # >>> NEW: референт для SL (trigger/trailing)
     cfg["entry_price"] = float(last_price)
     cfg["peak"] = float(last_price)
 
@@ -1094,8 +1094,6 @@ async def restart_cmd(message: types.Message):
     await message.answer("🔄 Логіку перезапущено.")
 
 # ---------------- MONITOR ----------------
-_monitor_task: Optional[asyncio.Task] = None
-
 async def monitor_orders():
     """
     Частий монітор: 2с.
@@ -1258,37 +1256,24 @@ async def monitor_orders():
             logging.error(f"Monitor error: {e}")
 
         await asyncio.sleep(2)  # було 10
-
 # ---------------- RUN ----------------
-async def _on_startup():
-    load_markets()
-    await load_market_rules()
-    logging.info("🚀 Bot is running and waiting for commands...")
-    # стартуємо монітор як тло
-    global _monitor_task
-    if _monitor_task is None or _monitor_task.done():
-        _monitor_task = asyncio.create_task(monitor_orders(), name="monitor_orders")
-
-async def _on_shutdown():
-    # коректно завершуємо монітор
-    global _monitor_task
-    if _monitor_task and not _monitor_task.done():
-        _monitor_task.cancel()
-        try:
-            await _monitor_task
-        except asyncio.CancelledError:
-            pass
-    logging.info("👋 Shutdown complete.")
-
-dp.startup.register(_on_startup)
-dp.shutdown.register(_on_shutdown)
-
 async def main():
-    # Поллінг Telegram
-    await dp.start_polling(bot)
+    load_markets()
+    await load_market_rules()  # <- завантажуємо правила ринків на старті
+    logging.info("🚀 Bot is running and waiting for commands...")
+
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logging.info("✅ Webhook очищено успішно")
+    except Exception as e:
+        logging.error(f"❌ Помилка очищення webhook: {e}")
+
+    asyncio.create_task(monitor_orders())
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
     try:
+        print("✅ main.py started")
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        pass
+        print("🛑 Bot stopped manually")
