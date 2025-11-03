@@ -1009,6 +1009,10 @@ async def place_tp_sl_from_holdings(market: str, cfg: dict) -> bool:
         logging.error(f"[HOLDINGS] Не вдалося отримати last_price для {market}.")
         return False
 
+    # референти для SL trigger/trailing
+    cfg["entry_price"] = float(last_price)
+    cfg["peak"] = float(last_price)
+
     base_av = await get_base_available(market)
     # буфер 0.5% від холдингів + квантизація до кроку
     safe_amount = (base_av * Decimal("0.995")).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
@@ -1021,11 +1025,10 @@ async def place_tp_sl_from_holdings(market: str, cfg: dict) -> bool:
     cfg["orders"] = []
     ts = now_ms()
 
-    # --- TP ---
+    # --- TP тільки якщо проходить мінімалки
     if cfg.get("tp"):
         tp_price = float(quantize_price(market, float(last_price) * (1 + float(cfg["tp"]) / 100)))
         cfg["last_tp_price"] = tp_price
-        # не збільшуємо amount понад safe_amount; якщо не вистачає до min_total — пропускаємо TP
         rules = get_rules(market)
         min_total = rules.get("min_total")
         can_place_tp = True
@@ -1041,30 +1044,13 @@ async def place_tp_sl_from_holdings(market: str, cfg: dict) -> bool:
             if oid:
                 cfg["orders"].append({"id": oid, "cid": cid, "type": "tp", "market": market})
 
-    # --- SL ---
-    if cfg.get("sl"):
-        sl_price = float(quantize_price(market, float(last_price) * (1 - float(cfg["sl"]) / 100)))
-        rules = get_rules(market)
-        min_total = rules.get("min_total")
-        can_place_sl = True
-        if min_total:
-            est_total = Decimal(str(sl_price)) * Decimal(str(safe_amount))
-            if est_total < min_total:
-                can_place_sl = False
-                logging.warning(f"[HOLDINGS-SL] {market}: safe_amount*SL({sl_price}) < min_total ({min_total}). Пропускаю SL.")
-        if can_place_sl:
-            cid = f"wb-{market}-sl-{ts}"
-            sl_order = await place_limit_order(market, "sell", sl_price, float(safe_amount), client_order_id=cid)
-            oid = _extract_order_id(sl_order)
-            if oid:
-                cfg["orders"].append({"id": oid, "cid": cid, "type": "sl", "market": market})
-
+    # SL-ліміт НЕ ставимо — зробить монітор ринком при тригері
     save_markets()
     created = len(cfg.get("orders", [])) > 0
     if created:
-        logging.info(f"[HOLDINGS] Для {market} створені ордери з наявних монет: {cfg['orders']}")
+        logging.info(f"[HOLDINGS] Для {market} створений TP від холдингів: {cfg['orders']}")
     else:
-        logging.warning(f"[HOLDINGS] Не вдалося створити TP/SL для {market}.")
+        logging.warning(f"[HOLDINGS] Не вдалося створити TP для {market}.")
     return created
 
 @dp.message(Command("buy"))
