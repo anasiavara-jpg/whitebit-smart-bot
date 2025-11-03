@@ -31,6 +31,43 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
+# --------- PERSIST PATH FOR markets.json (Render-safe) ----------
+def _ensure_dir(p: str) -> None:
+    try:
+        d = os.path.dirname(p)
+        if d and not os.path.exists(d):
+            os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+
+def _pick_markets_path() -> str:
+    """
+    Порядок пріоритету:
+    1) env MARKETS_FILE (якщо заданий)
+    2) /var/tmp/markets.json  (часто має права на запис)
+    3) /tmp/markets.json
+    4) ./markets.json (текуща папка — ок для локалки)
+    """
+    candidates = [
+        os.getenv("MARKETS_FILE"),
+        "/var/tmp/markets.json",
+        "/tmp/markets.json",
+        os.path.join(os.getcwd(), "markets.json"),
+    ]
+    for p in candidates:
+        if not p:
+            continue
+        try:
+            _ensure_dir(p)
+            # пробний запис/читання
+            with open(p, "a", encoding="utf-8") as _:
+                pass
+            return p
+        except Exception:
+            continue
+    # останній фолбек: поточна директорія
+    return "markets.json"
+
 # WhiteBIT base (важливо: без /api/v4 у BASE_URL)
 BASE_URL = "https://whitebit.com"
 MARKETS_FILE = "markets.json"
