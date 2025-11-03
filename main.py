@@ -79,10 +79,11 @@ market_rules: Dict[str, Dict[str, Any]] = {}
 # ---------------- JSON SAVE/LOAD ----------------
 def save_markets():
     try:
+        _ensure_dir(MARKETS_FILE)
         with open(MARKETS_FILE, "w", encoding="utf-8") as f:
             json.dump(markets, f, indent=2, ensure_ascii=False)
     except Exception as e:
-        logging.error(f"Помилка збереження markets.json: {e}")
+        logging.error(f"Помилка збереження markets.json ({MARKETS_FILE}): {e}")
 
 def _normalize_market_cfg(cfg: dict) -> dict:
     # гарантуємо наявність ключів для різних версій файлу
