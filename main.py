@@ -653,6 +653,61 @@ async def setrebuy_cmd(message: types.Message):
     except Exception:
         await message.answer("⚠️ Використання: /setrebuy BTC/USDT 2")
 
+@dp.message(Command("scalp"))
+async def scalp_cmd(message: types.Message):
+    try:
+        _, market, state = message.text.split()
+        market = market.upper().replace("/", "_")
+        if market not in markets:
+            return await message.answer("❌ Спочатку додай ринок через /market.")
+        markets[market]["scalp"] = (state.lower() == "on")
+        save_markets()
+        await message.answer(f"⚙️ SCALP для {market}: {state.upper()}")
+    except Exception:
+        await message.answer("⚠️ Використання: /scalp BTC/USDT on|off")
+
+@dp.message(Command("settick"))
+async def settick_cmd(message: types.Message):
+    try:
+        _, market, pct = message.text.split()
+        market = market.upper().replace("/", "_")
+        if market not in markets:
+            return await message.answer("❌ Спочатку додай ринок через /market.")
+        markets[market]["tick_pct"] = float(pct)
+        save_markets()
+        await message.answer(f"📏 Tick для {market}: {pct}%")
+    except Exception:
+        await message.answer("⚠️ Використання: /settick BTC/USDT 0.25")
+
+@dp.message(Command("setlevels"))
+async def setlevels_cmd(message: types.Message):
+    try:
+        _, market, n = message.text.split()
+        market = market.upper().replace("/", "_")
+        if market not in markets:
+            return await message.answer("❌ Спочатку додай ринок через /market.")
+        markets[market]["levels"] = max(1, int(n))
+        save_markets()
+        await message.answer(f"🪜 Levels для {market}: {n}")
+    except Exception:
+        await message.answer("⚠️ Використання: /setlevels BTC/USDT 3")
+
+@dp.message(Command("slmode"))
+async def slmode_cmd(message: types.Message):
+    try:
+        _, market, mode = message.text.split()
+        market = market.upper().replace("/", "_")
+        if market not in markets:
+            return await message.answer("❌ Спочатку додай ринок через /market.")
+        mode = mode.lower()
+        if mode not in ("trigger", "trailing"):
+            return await message.answer("⚠️ slmode: trigger|trailing")
+        markets[market]["sl_mode"] = mode
+        save_markets()
+        await message.answer(f"🛡️ SL mode для {market}: {mode}")
+    except Exception:
+        await message.answer("⚠️ Використання: /slmode BTC/USDT trigger|trailing")
+
 @dp.message(Command("autotrade"))
 async def autotrade_cmd(message: types.Message):
     try:
