@@ -1244,15 +1244,19 @@ async def monitor_orders():
                     no_active = (len(active_ids) == 0)
                     if no_tracked and no_active:
                         # якщо увімкнено скальп — спочатку сформуємо сітку
-                        if cfg.get("scalp"):
-                            lp = await get_last_price(market)
-                            if lp:
-                                await seed_scalp_grid(market, cfg, lp)
-                                if cfg.get("chat_id"):
-                                    await bot.send_message(
-                                        cfg["chat_id"], f"▶️ {market}: запущено мікро-скальп сітку"
-                                    )
-                                continue
+                   if cfg.get("scalp"):
+    lp = await get_last_price(market)
+    now = now_ms()
+    # не сідимо частіше ніж раз на 60 сек
+    if lp and (now - int(cfg.get("scalp_seeded_at", 0)) > 60_000):
+        await seed_scalp_grid(market, cfg, lp)
+        cfg["scalp_seeded_at"] = now
+        save_markets()
+        if cfg.get("chat_id"):
+            await bot.send_message(
+                cfg["chat_id"], f"▶️ {market}: запущено мікро-скальп сітку"
+            )
+        continue
                         # 1) старт від холдингів
                         started_from_holdings = await place_tp_sl_from_holdings(market, cfg)
                         if started_from_holdings:
