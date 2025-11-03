@@ -983,6 +983,11 @@ async def start_new_trade(market: str, cfg: dict):
         return
 
     # 5) Створення TP/SL як окремих лімітів
+        # >>> NEW: референт для SL (trigger/trailing)
+    cfg["entry_price"] = float(last_price)
+    cfg["peak"] = float(last_price)
+
+    # 5) Створення лише TP (SL як ліміт не ставимо — SL зробить монітор ринковим)
     cfg["orders"] = []
     ts = now_ms()
 
@@ -994,14 +999,6 @@ async def start_new_trade(market: str, cfg: dict):
         oid = _extract_order_id(tp_order)
         if oid:
             cfg["orders"].append({"id": oid, "cid": cid, "type": "tp", "market": market})
-
-    if cfg.get("sl"):
-        sl_price = float(quantize_price(market, last_price * (1 - float(cfg["sl"]) / 100)))
-        cid = f"wb-{market}-sl-{ts}"
-        sl_order = await place_limit_order(market, "sell", sl_price, base_amount, client_order_id=cid)
-        oid = _extract_order_id(sl_order)
-        if oid:
-            cfg["orders"].append({"id": oid, "cid": cid, "type": "sl", "market": market})
 
     save_markets()
 
