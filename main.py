@@ -1,4 +1,4 @@
-# main.py — WhiteBIT Smart Bot (v4-ready, clean + market rules/precision + holdings autostart + rebuy-after-TP, consolidated)
+# main.py — WhiteBIT Smart Bot (v4-ready, consolidated + scalp-fix + antiflood)
 import asyncio
 import base64
 import hashlib
@@ -66,8 +66,14 @@ def _normalize_market_cfg(cfg: dict) -> dict:
     cfg.setdefault("sl_mode", "trigger")   # "trigger" | "trailing"
     cfg.setdefault("entry_price", None)
     cfg.setdefault("peak", None)
+    # >>> анти-«ресідинг» скальп сітки
+    cfg.setdefault("scalp_seeded", False)
+    cfg.setdefault("last_seed_at", 0)
+    cfg.setdefault("seed_cooldown_s", 30)
+    # >>> анти-флуд повідомлень
+    cfg.setdefault("last_msg", {})
     return cfg
-    
+
 def load_markets():
     global markets
     if os.path.exists(MARKETS_FILE):
@@ -340,22 +346,15 @@ async def place_market_order(market: str, side: str, amount: float) -> dict:
     body = {"market": market, "side": side, "type": "market"}
 
     if side.lower() == "buy":
-        rules = get_rules(market)
-        quote_step = step_from_precision(rules["price_precision"])  # money/price precision
-        q_amount = (Decimal(str(amount)) // quote_step) * quote_step
-        if q_amount <= 0:
-            q_amount = quote_step
-
-        # Перевіряємо мінімальне min_total
+        # Без зайвої квантизації — лише доводимо до min_total
+        q_amount = Decimal(str(amount))
         _, q_amount = ensure_minima_for_order(market, "buy", price=None,
                                               amount_base=None, amount_quote=q_amount)
         body["amount"] = float(q_amount)
-
     else:
         a = quantize_amount(market, amount)
         if a <= 0:
             a = step_from_precision(get_rules(market)["amount_precision"])
-
         # Перевіряємо мінімальне min_amount
         a, _ = ensure_minima_for_order(market, "sell", price=None,
                                        amount_base=a, amount_quote=None)
@@ -395,8 +394,6 @@ async def place_limit_order(
     if post_only is not None:
         body["postOnly"] = bool(post_only)
     # STP вимикаємо: на WhiteBIT v4 часто не підтримується і дає 400
-    # if stp:
-    #     body["stp"] = stp
 
     return await private_post("/api/v4/order/new", body)
 
@@ -506,6 +503,21 @@ async def get_base_available(market: str) -> Decimal:
     except Exception:
         return Decimal("0")
 
+# ---------------- NOTIFY HELPERS ----------------
+def can_notify(cfg: dict, key: str, cooldown_s: int = 10) -> bool:
+    """
+    Простий анти-флуд: те саме повідомлення не частіше, ніж раз на cooldown_s секунд.
+    """
+    try:
+        last = int(cfg.get("last_msg", {}).get(key, 0))
+    except Exception:
+        last = 0
+    if now_ms() - last > cooldown_s * 1000:
+        cfg.setdefault("last_msg", {})[key] = now_ms()
+        save_markets()
+        return True
+    return False
+
 # ---------------- BOT COMMANDS ----------------
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
@@ -533,8 +545,7 @@ async def help_cmd(message: types.Message):
         "<b>Технічні:</b>\n"
         "/restart — перезапуск логіки\n"
         "/autotrade BTC/USDT on|off — увімк/вимк автотрейд\n"
-        "/setrebuy BTC/USDT 2 — % відкупу нижче TP (0 = вимкнено)"
-                "\n"
+        "/setrebuy BTC/USDT 2 — % відкупу нижче TP (0 = вимкнено)\n"
         "/scalp BTC/USDT on|off — мікро-скальп (сітка buy/sell)\n"
         "/settick BTC/USDT 0.25 — крок сітки у %\n"
         "/setlevels BTC/USDT 3 — кількість рівнів сітки\n"
@@ -566,7 +577,7 @@ async def market_cmd(message: types.Message):
     try:
         _, market = message.text.split()
         market = market.upper().replace("/", "_")  # BTC/USDT -> BTC_USDT
-        markets[market] = {
+        markets[market] = _normalize_market_cfg({
             "tp": None,
             "sl": None,
             "orders": [],
@@ -575,21 +586,19 @@ async def market_cmd(message: types.Message):
             "chat_id": message.chat.id,
             "rebuy_pct": 0.0,
             "last_tp_price": None,
-
-            # ↓↓↓ нові поля для скальпу та SL-режимів ↓↓↓
             "scalp": False,
             "tick_pct": 0.25,
             "levels": 3,
             "maker_only": True,
-            "sl_mode": "trigger",   # "trigger" або "trailing"
+            "sl_mode": "trigger",
             "entry_price": None,
             "peak": None,
-        }
+        })
         save_markets()
         await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
     except Exception:
         await message.answer("⚠️ Використання: /market BTC/USDT")
-        
+
 @dp.message(Command("settp"))
 async def settp_cmd(message: types.Message):
     try:
@@ -661,6 +670,8 @@ async def scalp_cmd(message: types.Message):
         if market not in markets:
             return await message.answer("❌ Спочатку додай ринок через /market.")
         markets[market]["scalp"] = (state.lower() == "on")
+        # при перемиканні скидаємо прапор, щоб дозволити одноразовий сид
+        markets[market]["scalp_seeded"] = False
         save_markets()
         await message.answer(f"⚙️ SCALP для {market}: {state.upper()}")
     except Exception:
@@ -791,9 +802,13 @@ async def cancel_cmd(message: types.Message):
         lst = data.get("orders", []) if isinstance(data, dict) else []
         cnt = 0
         for o in lst:
-            oid = o.get("orderId") or o.get("id")
+            oid_raw = o.get("orderId") or o.get("id")
+            try:
+                oid = int(str(oid_raw))
+            except Exception:
+                oid = None
             if oid:
-                res = await cancel_order(market, order_id=int(oid))
+                res = await cancel_order(market, order_id=oid)
                 if isinstance(res, dict) and res.get("success") is not False:
                     cnt += 1
         await message.answer(f"🧹 Скасовано {cnt} ордер(и/ів) на {market}.")
@@ -806,7 +821,7 @@ async def cancel_cmd(message: types.Message):
     else:
         await message.answer("⚠️ Використання: /cancel BTC/USDT 123456 або /cancel BTC/USDT all")
 
-VERSION = "v4.1.1-consolidated"
+VERSION = "v4.1.2-scalpfix"
 @dp.message(Command("version"))
 async def version_cmd(message: types.Message):
     await message.answer(f"🤖 Bot version: {VERSION}")
@@ -899,6 +914,9 @@ async def seed_scalp_grid(market: str, cfg: dict, ref_price: float):
                 oid = await _place_maker_limit(market, "sell", p, float(portion), tag)
                 if oid:
                     cfg["orders"].append({"id": oid, "type": "scalp_sell", "market": market, "price": p, "amount": float(portion)})
+    # відмічаємо одноразовий сид + таймштамп
+    cfg["scalp_seeded"] = True
+    cfg["last_seed_at"] = now_ms()
     save_markets()
 
 async def on_fill_pingpong(market: str, cfg: dict, filled: dict):
@@ -982,8 +1000,7 @@ async def start_new_trade(market: str, cfg: dict):
         logging.error(f"Нульовий обсяг базової монети після купівлі: spend={spend}, price={last_price}")
         return
 
-    # 5) Створення TP/SL як окремих лімітів
-        # >>> NEW: референт для SL (trigger/trailing)
+    # >>> референти для SL (trigger/trailing)
     cfg["entry_price"] = float(last_price)
     cfg["peak"] = float(last_price)
 
@@ -1090,6 +1107,7 @@ async def stop_cmd(message: types.Message):
 async def restart_cmd(message: types.Message):
     for m in markets:
         markets[m]["orders"] = []
+        markets[m]["scalp_seeded"] = False
     save_markets()
     await message.answer("🔄 Логіку перезапущено.")
 
@@ -1136,10 +1154,11 @@ async def monitor_orders():
                             base_av = await get_base_available(market)
                             if base_av > 0:
                                 await place_market_order(market, "sell", float(base_av))
-                                if cfg.get("chat_id"):
+                                if cfg.get("chat_id") and can_notify(cfg, "sl_msg", 10):
                                     await bot.send_message(cfg["chat_id"], f"🛑 {market}: SL спрацював, продано ринком.")
                             cfg["entry_price"] = None
                             cfg["peak"] = None
+                            cfg["scalp_seeded"] = False
                             save_markets()
                             continue  # до наступного ринку
 
@@ -1152,10 +1171,11 @@ async def monitor_orders():
                         for o in orders_list:
                             oid = None
                             if isinstance(o, dict):
-                                if "orderId" in o:
-                                    oid = int(str(o["orderId"]))
-                                elif "id" in o:
-                                    oid = int(str(o["id"]))
+                                oid_raw = o.get("orderId") or o.get("id")
+                                try:
+                                    oid = int(str(oid_raw))
+                                except Exception:
+                                    oid = None
                             if oid is not None:
                                 active_ids.add(oid)
 
@@ -1167,7 +1187,7 @@ async def monitor_orders():
 
                 if finished_any:
                     chat_id = cfg.get("chat_id")
-                    if chat_id:
+                    if chat_id and can_notify(cfg, "filled_msg", 2):
                         await bot.send_message(
                             chat_id=chat_id,
                             text=f"✅ Ордер {finished_any['id']} ({market}, {finished_any['type']}) закрито!"
@@ -1177,6 +1197,8 @@ async def monitor_orders():
                         if entry["id"] != finished_any["id"]:
                             await cancel_order(market, order_id=entry["id"])
                     cfg["orders"].clear()
+                    # дозволити новий одноразовий сид при наступному циклі
+                    cfg["scalp_seeded"] = False
                     save_markets()
 
                     # REBUY/рестарт логіка
@@ -1186,7 +1208,7 @@ async def monitor_orders():
                             ref = cfg.get("last_tp_price") or (await get_last_price(market))
                             oid = await place_limit_buy_at_discount(market, cfg, float(ref or 0))
                             if oid:
-                                if chat_id:
+                                if chat_id and can_notify(cfg, "rebuy_msg", 5):
                                     await bot.send_message(
                                         chat_id=chat_id,
                                         text=f"🔻 {market}: лімітний відкуп на {cfg['rebuy_pct']}% нижче TP виставлено (order {oid})"
@@ -1194,12 +1216,11 @@ async def monitor_orders():
                                 handled = True
                         elif finished_any.get("type") == "rebuy":
                             ok = await place_tp_sl_from_holdings(market, cfg)
-                            if ok:
-                                if chat_id:
-                                    await bot.send_message(
-                                        chat_id=chat_id,
-                                        text=f"🎯 {market}: після відкупу виставлено TP від холдингів"
-                                    )
+                            if ok and chat_id and can_notify(cfg, "after_rebuy_tp", 5):
+                                await bot.send_message(
+                                    chat_id=chat_id,
+                                    text=f"🎯 {market}: після відкупу виставлено TP від холдингів"
+                                )
                                 handled = True
 
                         # >>> ping-pong для скальпу
@@ -1208,7 +1229,7 @@ async def monitor_orders():
                             handled = True
 
                         if not handled:
-                            if chat_id:
+                            if chat_id and can_notify(cfg, "autotrade_new", 5):
                                 await bot.send_message(
                                     chat_id=chat_id,
                                     text=f"♻️ Автотрейд {market}: нова угода на {cfg['buy_usdt']} USDT"
@@ -1220,20 +1241,19 @@ async def monitor_orders():
                     no_tracked = len(cfg.get("orders", [])) == 0
                     no_active = (len(active_ids) == 0)
                     if no_tracked and no_active:
-                        # якщо увімкнено скальп — спочатку сформуємо сітку
+                        # якщо увімкнено скальп — спочатку сформуємо сітку (разово + кулдаун)
                         if cfg.get("scalp"):
                             lp = await get_last_price(market)
-                            if lp:
+                            cooldown_ok = (now_ms() - int(cfg.get("last_seed_at", 0))) > int(cfg.get("seed_cooldown_s", 30)) * 1000
+                            if lp and (not cfg.get("scalp_seeded", False) or cooldown_ok):
                                 await seed_scalp_grid(market, cfg, lp)
-                                if cfg.get("chat_id"):
-                                    await bot.send_message(
-                                        cfg["chat_id"], f"▶️ {market}: запущено мікро-скальп сітку"
-                                    )
+                                if cfg.get("chat_id") and can_notify(cfg, "seed_msg", 10):
+                                    await bot.send_message(cfg["chat_id"], f"▶️ {market}: запущено мікро-скальп сітку")
                                 continue
                         # 1) старт від холдингів
                         started_from_holdings = await place_tp_sl_from_holdings(market, cfg)
                         if started_from_holdings:
-                            if cfg.get("chat_id"):
+                            if cfg.get("chat_id") and can_notify(cfg, "start_from_holdings", 10):
                                 await bot.send_message(
                                     cfg["chat_id"], f"▶️ {market}: старт від наявних монет (TP виставлено)"
                                 )
@@ -1243,7 +1263,7 @@ async def monitor_orders():
                             spend = Decimal(str(cfg.get("buy_usdt", 10)))
                             spend_adj = (spend * Decimal("0.998")).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
                             if usdt >= spend_adj and float(spend_adj) > 0:
-                                if cfg.get("chat_id"):
+                                if cfg.get("chat_id") and can_notify(cfg, "autostart_buy", 10):
                                     await bot.send_message(
                                         cfg["chat_id"],
                                         text=f"▶️ {market}: автостарт купівлі на {spend_adj} USDT (бо холдингів немає)"
@@ -1256,6 +1276,7 @@ async def monitor_orders():
             logging.error(f"Monitor error: {e}")
 
         await asyncio.sleep(2)  # було 10
+
 # ---------------- RUN ----------------
 async def main():
     load_markets()
