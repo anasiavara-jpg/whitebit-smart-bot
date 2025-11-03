@@ -111,6 +111,9 @@ def _normalize_market_cfg(cfg: dict) -> dict:
     cfg.setdefault("seed_cooldown_s", 30)
     # >>> анти-флуд повідомлень
     cfg.setdefault("last_msg", {})
+    cfg.setdefault("scalp_seeded", False)
+    cfg.setdefault("last_seed_at", 0)
+    cfg.setdefault("seed_cooldown_s", 30)
     return cfg
 
 def load_markets():
