@@ -1328,6 +1328,25 @@ async def main():
         logging.error(f"❌ Помилка очищення webhook: {e}")
 
     asyncio.create_task(monitor_orders())
+    import aiohttp
+
+async def ensure_single_instance():
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Telegram API test
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getMe"
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    logging.info("✅ Telegram API reachable, safe to start polling")
+                else:
+                    logging.warning(f"⚠️ Telegram returned {resp.status}, waiting...")
+    except Exception as e:
+        logging.warning(f"⚠️ Delay before polling due to {e}")
+        await asyncio.sleep(5)
+
+# Виклик перед запуском polling:
+await ensure_single_instance()
+await dp.start_polling(bot)
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
