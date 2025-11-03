@@ -1112,33 +1112,42 @@ async def monitor_orders():
                     sl_pct = float(cfg.get("sl") or 0)
                 except Exception:
                     sl_pct = 0.0
+
                 if sl_pct > 0:
                     lp = await get_last_price(market)
                     if lp:
                         mode = (cfg.get("sl_mode") or "trigger").lower()
+
                         if mode == "trailing":
                             peak = float(cfg.get("peak") or 0)
                             if lp > (peak or 0):
                                 cfg["peak"] = lp
                                 save_markets()
+
                         threshold = None
                         if mode == "trigger" and cfg.get("entry_price"):
                             threshold = float(cfg["entry_price"]) * (1 - sl_pct / 100)
                         elif mode == "trailing" and cfg.get("peak"):
                             threshold = float(cfg["peak"]) * (1 - sl_pct / 100)
+
                         if threshold and lp <= threshold:
+                            # скасовуємо всі ліміти
                             acts = await active_orders(market)
                             for o in acts.get("orders", []):
                                 oid = o.get("orderId") or o.get("id")
                                 if oid:
                                     await cancel_order(market, order_id=int(oid))
+
                             cfg["orders"].clear()
                             save_markets()
+
+                            # продаємо ринком усе, що є в BASE
                             base_av = await get_base_available(market)
                             if base_av > 0:
                                 await place_market_order(market, "sell", float(base_av))
                                 if cfg.get("chat_id"):
                                     await bot.send_message(cfg["chat_id"], f"🛑 {market}: SL спрацював, продано ринком.")
+
                             cfg["entry_price"] = None
                             cfg["peak"] = None
                             save_markets()
@@ -1160,16 +1169,17 @@ async def monitor_orders():
                             if oid is not None:
                                 active_ids.add(oid)
 
+                # визначаємо, який з треканих ордерів заповнився
                 finished_any = None
                 for entry in list(cfg.get("orders", [])):
                     if entry["id"] not in active_ids:
                         finished_any = entry
                         break
 
-                                if finished_any:
+                if finished_any:
                     chat_id = cfg.get("chat_id")
 
-                    # 🔧 Якщо скальп: не чистимо всю сітку і не скасовуємо інші ордери
+                    # 🔧 Якщо скальп: НЕ чистимо всю сітку і НЕ скасовуємо інші ордери
                     is_scalp = cfg.get("scalp") and str(finished_any.get("type", "")).startswith("scalp")
                     if is_scalp:
                         if chat_id:
@@ -1177,7 +1187,7 @@ async def monitor_orders():
                                 chat_id=chat_id,
                                 text=f"✅ Ордер {finished_any['id']} ({market}, {finished_any['type']}) закрито!"
                             )
-                        # прибираємо лише заповнений ордер
+                        # прибираємо тільки заповнений ордер
                         cfg["orders"] = [
                             e for e in cfg.get("orders", [])
                             if e.get("id") != finished_any["id"]
@@ -1195,9 +1205,9 @@ async def monitor_orders():
                         )
 
                     # скасувати інші ордери з цієї пари
-                    for e in list(cfg.get("orders", [])):
-                        if e["id"] != finished_any["id"]:
-                            await cancel_order(market, order_id=e["id"])
+                    for entry in list(cfg.get("orders", [])):
+                        if entry["id"] != finished_any["id"]:
+                            await cancel_order(market, order_id=entry["id"])
 
                     cfg["orders"].clear()
                     save_markets()
@@ -1225,6 +1235,11 @@ async def monitor_orders():
                                     )
                                 handled = True
 
+                        # >>> ping-pong для скальпу (на випадок, якщо сюди потрапили)
+                        if cfg.get("scalp") and str(finished_any.get("type", "")).startswith("scalp"):
+                            await on_fill_pingpong(market, cfg, finished_any)
+                            handled = True
+
                         if not handled:
                             if chat_id:
                                 await bot.send_message(
@@ -1238,7 +1253,7 @@ async def monitor_orders():
                     no_tracked = len(cfg.get("orders", [])) == 0
                     no_active = (len(active_ids) == 0)
                     if no_tracked and no_active:
-                        # якщо увімкнено скальп — спочатку сформуємо сітку (не частіше 1 раз/60с)
+                        # якщо увімкнено скальп — спочатку сформуємо сітку (не частіше ніж раз на 60с)
                         if cfg.get("scalp"):
                             lp = await get_last_price(market)
                             now = now_ms()
@@ -1250,7 +1265,7 @@ async def monitor_orders():
                                     await bot.send_message(
                                         cfg["chat_id"], f"▶️ {market}: запущено мікро-скальп сітку"
                                     )
-                                continue
+                                continue  # не стартуємо одразу угоду, бо вже сіданули сітку
 
                         # 1) старт від холдингів
                         started_from_holdings = await place_tp_sl_from_holdings(market, cfg)
