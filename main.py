@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import time
+import aiohttp
 from typing import Dict, Any, Optional
 
 import httpx
