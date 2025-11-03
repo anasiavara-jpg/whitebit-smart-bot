@@ -140,7 +140,7 @@ async def public_get(path: str) -> dict:
     url = BASE_URL + path
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=30, http2=True) as client:
+            async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.get(url)
             if r.status_code == 429:
                 await asyncio.sleep(0.5 + 0.5 * attempt)
@@ -164,7 +164,7 @@ async def private_post(path: str, extra_body: Optional[dict] = None) -> dict:
     url = BASE_URL + path
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=30, http2=True) as client:
+            async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.post(url, headers=headers, content=body_bytes)
             if r.status_code == 429:
                 await asyncio.sleep(0.5 + 0.5 * attempt)
