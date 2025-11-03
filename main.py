@@ -875,7 +875,7 @@ async def _place_maker_limit(market, side, price, amount, tag):
 
 async def seed_scalp_grid(market: str, cfg: dict, ref_price: float):
     tick, levels = _pp(market, cfg)
-    spend = Decimal(str(cfg.get("buy_usdt", 5")))
+    spend = Decimal(str(cfg.get("buy_usdt", 5)))
     base_av = await get_base_available(market)
     ap = step_from_precision(get_rules(market)["amount_precision"])
     # BUY-сітка
