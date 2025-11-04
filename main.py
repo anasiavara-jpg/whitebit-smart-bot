@@ -882,6 +882,22 @@ async def scalp_cmd(message: types.Message):
     except Exception:
         await message.answer("⚠️ Використання: /scalp BTC/USDT on|off")
 
+@dp.message(Command("autodd"))
+async def autodd_cmd(message: types.Message):
+    try:
+        _, market, pct = message.text.split()
+        market = market.upper().replace("/", "_")
+        if market not in markets:
+            return await message.answer("❌ Спочатку додай ринок через /market.")
+        v = float(pct)
+        if v < 0:
+            return await message.answer("⚠️ Вкажи відсоток ≥ 0 (0 = вимкнено).")
+        markets[market]["auto_dd_pct"] = v
+        save_markets()
+        await message.answer(f"🛡️ AUTO-DD для {market}: {v}% від ціни входу")
+    except Exception:
+        await message.answer("⚠️ Використання: /autodd BTC/USDT 3.0")
+
 @dp.message(Command("settick"))
 async def settick_cmd(message: types.Message):
     try:
