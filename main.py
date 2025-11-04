@@ -1410,7 +1410,7 @@ async def monitor_orders():
     while True:
         try:
             for market, cfg in list(markets.items()):
-                                # --- AUTO MODE: визначення тренду і підміна профілю
+              # --- AUTO MODE: визначення тренду і підміна профілю
                 try:
                     if (cfg.get("mode") == "auto"):
                         lp = await get_last_price(market)
@@ -1445,6 +1445,23 @@ async def monitor_orders():
                                         if k in prof:
                                             cfg[k] = prof[k]
                                     save_markets()
+                                                                    if want:
+                                    prof = cfg.get(f"profile_{want}") or {}
+                                    for k in ("tp", "sl", "rebuy_pct", "scalp", "tick_pct", "levels"):
+                                        if k in prof:
+                                            cfg[k] = prof[k]
+                                    save_markets()
+
+                                    # 🟢 якщо монети були «заморожені» після SL — відновлюємо тільки на ап-тренді
+                                    if want == "up" and cfg.get("holdings_lock"):
+                                        ok = await place_tp_sl_from_holdings(market, cfg)
+                                        if ok and cfg.get("chat_id"):
+                                            await bot.send_message(
+                                                cfg["chat_id"],
+                                                f"🟢 {market}: ап-тренд. Відновлено: виставлено TP від холдингів."
+                                            )
+                                        cfg["holdings_lock"] = False
+                                        save_markets()
                 except Exception as e:
                     logging.warning(f"[AUTO MODE] {market} error: {e}")
                 # --- HARD/TRAILING SL ---
