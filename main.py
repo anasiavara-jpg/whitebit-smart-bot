@@ -958,6 +958,19 @@ async def slmode_cmd(message: types.Message):
     except Exception:
         await message.answer("⚠️ Використання: /slmode BTC/USDT trigger|trailing")
 
+@dp.message(Command("holdsl"))
+async def holdsl_cmd(message: types.Message):
+    try:
+        _, market, state = message.text.split()
+        market = market.upper().replace("/", "_")
+        if market not in markets:
+            return await message.answer("❌ Спочатку додай ринок через /market.")
+        markets[market]["hold_on_sl"] = (state.lower() == "on")
+        save_markets()
+        await message.answer(f"🛡️ HOLD-on-SL для {market}: {state.upper()}")
+    except Exception:
+        await message.answer("⚠️ Використання: /holdsl BTC/USDT on|off")
+
 @dp.message(Command("autotrade"))
 async def autotrade_cmd(message: types.Message):
     try:
