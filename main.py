@@ -454,8 +454,7 @@ def ensure_minima_for_order(market: str, side: str, price: Optional[float],
     if side_l == "buy" and price is None:
         if amount_quote is not None and min_total:
             if amount_quote < min_total:
-                adj = (min_total * Decimal("1.001"))
-                adj = (adj // pp) * pp
+                adj = ceil_to_step(min_total * Decimal("1.001"), pp)
                 if adj <= 0:
                     adj = pp
                 amount_quote = adj
