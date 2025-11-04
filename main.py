@@ -1462,7 +1462,7 @@ async def monitor_orders():
                         finished_any = entry
                         break
 
-                 if finished_any:
+                if finished_any:
                     chat_id = cfg.get("chat_id")
 
                     # SAFETY: автостоп по локальному падінню від entry_price
@@ -1502,6 +1502,7 @@ async def monitor_orders():
                             cfg["peak"] = None
                             save_markets()
                             continue
+
                     # 🔧 Якщо скальп: НЕ чистимо всю сітку і НЕ скасовуємо інші ордери
                     is_scalp = cfg.get("scalp") and str(finished_any.get("type", "")).startswith("scalp")
                     if is_scalp:
