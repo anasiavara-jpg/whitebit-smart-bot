@@ -1158,6 +1158,10 @@ async def seed_scalp_grid(market: str, cfg: dict, ref_price: float):
     if base_av > 0:
         portion = (base_av / Decimal(max(1, levels))).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
         portion = quantize_amount(market, float(portion))
+        rules = get_rules(market)
+        min_amount = rules.get("min_amount")
+        if min_amount and portion < min_amount:
+             portion = min_amount
         if portion > 0:
             for i in range(1, levels + 1):
                 p = float(quantize_price(market, ref_price * (1 + (tick * i) / 100)))
