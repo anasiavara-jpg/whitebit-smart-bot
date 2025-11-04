@@ -190,6 +190,9 @@ def _normalize_market_cfg(cfg: dict) -> dict:
         "tp": 0.80, "sl": 1.2, "rebuy_pct": 0.5,
         "scalp": True, "tick_pct": 0.25, "levels": 3
     })
+    # --- мʼякий SL і «заморозка» холдингів
+    cfg.setdefault("hold_on_sl", False)    # якщо True — при SL НЕ продаємо, а тримаємо монети
+    cfg.setdefault("holdings_lock", False) # внутрішній прапор: монети «заморожені» до ап-тренду
     return cfg
 
 def load_markets():
