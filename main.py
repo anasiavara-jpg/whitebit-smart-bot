@@ -1394,6 +1394,7 @@ async def monitor_orders():
                 try:
                     if (cfg.get("mode") == "auto"):
                         lp = await get_last_price(market)
+                        safety.note_price(market, Decimal(str(lp)), time.time())
                         if lp:
                             now = now_ms()
                             ref_p = cfg.get("trend_ref_price")
