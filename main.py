@@ -39,6 +39,106 @@ markets: Dict[str, Dict[str, Any]] = {}
 # Кеш правил ринків (price/amount precision, min тощо)
 market_rules: Dict[str, Dict[str, Any]] = {}
 
+# ---------------- SAFETY / RISK LAYER ----------------
+from dataclasses import dataclass, field
+from collections import deque
+from decimal import Decimal
+
+@dataclass
+class SafetyConfig:
+    enabled: bool = True                  # /safemode on|off
+    dump_window_sec: int = 180            # скільки секунд дивимося на обвал
+    dump_pct: Decimal = Decimal("1.2")    # якщо ціна впала >1.2% за вікно — пауза входів
+    max_spread_pct: Decimal = Decimal("0.6")  # якщо спред >0.6% — не входимо
+    pair_max_dd_pct: Decimal = Decimal("1.2") # автостоп по парі (від середньої ціни входів)
+    daily_loss_pct: Decimal = Decimal("3.0")  # автостоп за день від equity (прибл.)
+    auto_profit_fix_enabled: bool = True  # /autopf on|off
+    min_pnl_lock_pct: Decimal = Decimal("0.8")# при n% руху в плюс — підтягуємо ТР
+    trail_tp_gap_pct: Decimal = Decimal("0.4")# відстань, на яку відтягуємо TP від поточної
+
+@dataclass
+class SafetyState:
+    # ціни по часу для детекції дампу / тренду
+    last_prices: deque = field(default_factory=lambda: deque(maxlen=60))
+    last_ts: float = 0.0
+    day_equity_start: Decimal = Decimal("0")
+    paused_until: float = 0.0             # timestamp; якщо > now => пауза
+    avg_entry_price: Decimal = Decimal("0")
+    position_qty: Decimal = Decimal("0")  # сума куплених монет (для DD)
+    realized_pnl_day: Decimal = Decimal("0")
+
+class SafetyManager:
+    def __init__(self, cfg: SafetyConfig):
+        self.cfg = cfg
+        self.by_pair: dict[str, SafetyState] = {}
+
+    def _st(self, pair: str) -> SafetyState:
+        if pair not in self.by_pair:
+            self.by_pair[pair] = SafetyState()
+        return self.by_pair[pair]
+
+    def note_price(self, pair: str, price: Decimal, now: float):
+        st = self._st(pair)
+        st.last_prices.append((now, price))
+        st.last_ts = now
+
+    def block_entry_reason(self, pair: str, price: Decimal, spread_pct: Decimal, now: float) -> str | None:
+        if not self.cfg.enabled:
+            return None
+        st = self._st(pair)
+
+        # Пауза активна?
+        if st.paused_until and now < st.paused_until:
+            return f"PAUSE ({int(st.paused_until - now)}s)"
+
+        # Широкий спред — ризик «пилорами»
+        if spread_pct >= self.cfg.max_spread_pct:
+            return f"SPREAD>{self.cfg.max_spread_pct}%"
+
+        # Детектор дампу за останні dump_window_sec
+        start_price = None
+        for ts, p in st.last_prices:
+            if now - ts <= self.cfg.dump_window_sec:
+                start_price = start_price or p
+        if start_price:
+            drop_pct = ( (start_price - price) / start_price ) * Decimal("100")
+            if drop_pct >= self.cfg.dump_pct:
+                # ставимо коротку паузу на 2 хв
+                st.paused_until = now + 120
+                return f"DUMP>{self.cfg.dump_pct}%"
+
+        return None
+
+    def update_position(self, pair: str, avg_entry_price: Decimal, qty: Decimal):
+        st = self._st(pair)
+        st.avg_entry_price = avg_entry_price
+        st.position_qty = qty
+
+    def check_pair_autostop(self, pair: str, last_price: Decimal):
+        if not self.cfg.enabled:
+            return False
+        st = self._st(pair)
+        if st.position_qty <= 0 or st.avg_entry_price <= 0:
+            return False
+        dd_pct = ((st.avg_entry_price - last_price) / st.avg_entry_price) * Decimal("100")
+        return dd_pct >= self.cfg.pair_max_dd_pct
+
+    def should_lock_profit(self, pair: str, last_price: Decimal) -> Decimal | None:
+        """Повертає бажаний TP-рівень (ціна), якщо треба підтягнути TP вище поточного."""
+        if not self.cfg.auto_profit_fix_enabled:
+            return None
+        st = self._st(pair)
+        if st.position_qty <= 0 or st.avg_entry_price <= 0:
+            return None
+        move_pct = ((last_price - st.avg_entry_price) / st.avg_entry_price) * Decimal("100")
+        if move_pct >= self.cfg.min_pnl_lock_pct:
+            gap = (last_price * self.cfg.trail_tp_gap_pct) / Decimal("100")
+            return last_price - gap
+        return None
+
+# створимо глобальний safety
+safety = SafetyManager(SafetyConfig())
+
 # ---------------- JSON SAVE/LOAD ----------------
 def save_markets():
     try:
