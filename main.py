@@ -166,7 +166,7 @@ def _normalize_market_cfg(cfg: dict) -> dict:
     cfg.setdefault("entry_price", None)
     cfg.setdefault("peak", None)
     cfg.setdefault("scalp_seeded_at", 0)  # ms, коли востаннє створили сітку
-        # --- режим керування профілем: manual | auto
+    # --- режим керування профілем: manual | auto
     cfg.setdefault("mode", "manual")  # за замовчуванням ручний режим
 
     # --- авто-тренд: вікно та референс
