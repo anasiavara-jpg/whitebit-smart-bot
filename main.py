@@ -42,7 +42,6 @@ market_rules: Dict[str, Dict[str, Any]] = {}
 # ---------------- SAFETY / RISK LAYER ----------------
 from dataclasses import dataclass, field
 from collections import deque
-from decimal import Decimal
 
 @dataclass
 class SafetyConfig:
