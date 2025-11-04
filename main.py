@@ -794,6 +794,21 @@ async def autotrade_cmd(message: types.Message):
     except Exception:
         await message.answer("⚠️ Використання: /autotrade BTC/USDT on|off")
 
+@dp.message(Command("mode"))
+async def mode_cmd(message: types.Message):
+    try:
+        _, market, state = message.text.split()
+        market = market.upper().replace("/", "_")
+        state = state.lower()
+        if market not in markets:
+            return await message.answer("❌ Спочатку додай ринок через /market.")
+        if state not in ("manual", "auto"):
+            return await message.answer("⚠️ Використання: /mode BTC/USDT manual|auto")
+        markets[market]["mode"] = state
+        save_markets()
+        await message.answer(f"🧠 Режим для {market}: {state.upper()}")
+    except Exception:
+        await message.answer("⚠️ Використання: /mode BTC/USDT manual|auto")
 @dp.message(Command("status"))
 async def status_cmd(message: types.Message):
     if not markets:
