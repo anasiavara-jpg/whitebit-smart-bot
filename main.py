@@ -683,31 +683,47 @@ async def start_cmd(message: types.Message):
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
     await message.answer(
-        "<b>Основні:</b>\n"
+        "<b>Основні</b>\n"
         "/start — вітання\n"
         "/help — список команд\n\n"
-        "<b>Торгові:</b>\n"
+
+        "<b>Торгові</b>\n"
         "/balance — баланс\n"
         "/market BTC/USDT — додати ринок\n"
         "/settp BTC/USDT 5 — TP у %\n"
         "/setsl BTC/USDT 2 — SL у %\n"
-        "/setbuy BTC/USDT 30 — купівля на 30 USDT\n"
+        "/setbuy BTC/USDT 30 — сума купівлі в USDT\n"
         "/buy BTC/USDT — разова купівля\n"
-        "/status — активні ринки\n"
-        "/stop — зупиняє торгівлю\n"
-        "/removemarket BTC/USDT — видаляє ринок\n\n"
-        "<b>Технічні:</b>\n"
-        "/restart — перезапуск логіки\n"
-        "/autotrade BTC/USDT on|off — увімк/вимк автотрейд\n"
-        "/mode BTC/USDT manual|auto — режим керування профілем (ручний/авто)\n"
-        "/setrebuy BTC/USDT 2 — % відкупу нижче TP (0 = вимкнено)"
-                "\n"
-        "/scalp BTC/USDT on|off — мікро-скальп (сітка buy/sell)\n"
-        "/settick BTC/USDT 0.25 — крок сітки у %\n"
-        "/setlevels BTC/USDT 3 — кількість рівнів сітки\n"
-        "/slmode BTC/USDT trigger|trailing — тип SL (ринковий тригер або трейлінг)"
-    )
+        "/removemarket BTC/USDT — видалити ринок\n"
+        "/status — статус по ринках\n"
+        "/orders BTC/USDT — активні ордери\n"
+        "/cancel BTC/USDT [orderId|all] — скасувати ордер(и)\n\n"
 
+        "<b>Автотрейд та профілі</b>\n"
+        "/autotrade BTC/USDT on|off — увімк/вимк автотрейд\n"
+        "/mode BTC/USDT manual|auto — режим керування профілем\n"
+        "/setrebuy BTC/USDT 2 — відкуп на N% нижче TP (0 = off)\n\n"
+
+        "<b>Скальп-сітка</b>\n"
+        "/scalp BTC/USDT on|off — мікро-скальп\n"
+        "/settick BTC/USDT 0.25 — крок сітки у %\n"
+        "/setlevels BTC/USDT 3 — кількість рівнів\n\n"
+
+        "<b>SL режими</b>\n"
+        "/slmode BTC/USDT trigger|trailing — тип SL\n"
+        "/autodd BTC/USDT 3.0 — авто-стоп при падінні від entry на N%\n\n"
+
+        "<b>Безпека / ризик-менеджмент</b>\n"
+        "/safemode on|off — глобальний safe-mode\n"
+        "/setautostop 3 — денний ліміт втрат у %\n"
+        "/autopf on|off — авто-підтягування TP\n"
+        "/setminpnl 0.8 — мін. рух (у %) для блокування прибутку\n\n"
+
+        "<b>Службові</b>\n"
+        "/restart — перезапуск логіки\n"
+        "/stop — зупинити торгівлю (очистити ринки)\n"
+        "/version — версія бота"
+    )
 @dp.message(Command("safemode"))
 async def cmd_safemode(msg: types.Message):
     # /safemode on|off
