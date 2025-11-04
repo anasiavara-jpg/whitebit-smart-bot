@@ -790,6 +790,7 @@ async def market_cmd(message: types.Message):
             "sl_mode": "trigger",
             "entry_price": None,
             "peak": None,
+            "auto_dd_pct": 3.0,
             "mode": "manual",
             "trend_window_s": 300,
             "trend_ref_price": None,
