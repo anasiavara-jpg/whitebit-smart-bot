@@ -599,6 +599,7 @@ async def help_cmd(message: types.Message):
         "<b>Технічні:</b>\n"
         "/restart — перезапуск логіки\n"
         "/autotrade BTC/USDT on|off — увімк/вимк автотрейд\n"
+        "/mode BTC/USDT manual|auto — режим керування профілем (ручний/авто)\n"
         "/setrebuy BTC/USDT 2 — % відкупу нижче TP (0 = вимкнено)"
                 "\n"
         "/scalp BTC/USDT on|off — мікро-скальп (сітка buy/sell)\n"
