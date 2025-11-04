@@ -1470,13 +1470,40 @@ async def monitor_orders():
                         elif mode == "trailing" and cfg.get("peak"):
                             threshold = float(cfg["peak"]) * (1 - sl_pct / 100)
 
-                        if threshold and lp <= threshold:
+                                                if threshold and lp <= threshold:
                             # скасовуємо всі ліміти
                             acts = await active_orders(market)
                             for o in acts.get("orders", []):
                                 oid = o.get("orderId") or o.get("id")
                                 if oid:
                                     await cancel_order(market, order_id=str(oid))
+
+                            cfg["orders"].clear()
+                            save_markets()
+
+                            base_av = await get_base_available(market)
+
+                            if cfg.get("hold_on_sl"):
+                                # ✅ Мʼякий SL: НЕ продаємо ринком, «заморожуємо» холдинг до ап-тренду
+                                cfg["holdings_lock"] = True
+                                save_markets()
+                                if cfg.get("chat_id"):
+                                    await bot.send_message(
+                                        cfg["chat_id"],
+                                        f"🟡 {market}: SL-тригер. Монети залишено (hold_on_sl=ON). Чекаю ап-тренду."
+                                    )
+                            else:
+                                # звичайна поведінка: продати ринком усе
+                                if base_av > 0:
+                                    await place_market_order(market, "sell", float(base_av))
+                                    if cfg.get("chat_id"):
+                                        await bot.send_message(cfg["chat_id"], f"🛑 {market}: SL спрацював, продано ринком.")
+
+                            # скинути референси
+                            cfg["entry_price"] = None
+                            cfg["peak"] = None
+                            save_markets()
+                            continue  # до наступної пари
 
                             cfg["orders"].clear()
                             save_markets()
