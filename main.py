@@ -630,8 +630,9 @@ async def balance_cmd(message: types.Message):
 @dp.message(Command("market"))
 async def market_cmd(message: types.Message):
     try:
-        _, market = message.text.split()
+        _, market = message.text.split(maxsplit=1)
         market = market.upper().replace("/", "_")  # BTC/USDT -> BTC_USDT
+
         markets[market] = {
             "tp": None,
             "sl": None,
@@ -650,7 +651,9 @@ async def market_cmd(message: types.Message):
             "sl_mode": "trigger",   # "trigger" або "trailing"
             "entry_price": None,
             "peak": None,
-                        "mode": "manual",
+
+            # ↓↓↓ AUTO-mode дефолти ↓↓↓
+            "mode": "manual",
             "trend_window_s": 300,
             "trend_ref_price": None,
             "trend_ref_ts": 0,
@@ -659,7 +662,11 @@ async def market_cmd(message: types.Message):
             "profile_down": {"tp": 0.45, "sl": 2.5, "rebuy_pct": 0.0, "scalp": True, "tick_pct": 0.30, "levels": 3},
             "profile_up":   {"tp": 0.80, "sl": 1.2, "rebuy_pct": 0.5, "scalp": True, "tick_pct": 0.25, "levels": 3},
         }
+
         save_markets()
+        await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
+    except Exception:
+        await message.answer("⚠️ Використання: /market BTC/USDT")
         await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
     except Exception:
         await message.answer("⚠️ Використання: /market BTC/USDT")
