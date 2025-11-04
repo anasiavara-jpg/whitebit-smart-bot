@@ -650,6 +650,14 @@ async def market_cmd(message: types.Message):
             "sl_mode": "trigger",   # "trigger" або "trailing"
             "entry_price": None,
             "peak": None,
+                        "mode": "manual",
+            "trend_window_s": 300,
+            "trend_ref_price": None,
+            "trend_ref_ts": 0,
+            "auto_down_pct": -1.5,
+            "auto_up_pct": 1.0,
+            "profile_down": {"tp": 0.45, "sl": 2.5, "rebuy_pct": 0.0, "scalp": True, "tick_pct": 0.30, "levels": 3},
+            "profile_up":   {"tp": 0.80, "sl": 1.2, "rebuy_pct": 0.5, "scalp": True, "tick_pct": 0.25, "levels": 3},
         }
         save_markets()
         await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
