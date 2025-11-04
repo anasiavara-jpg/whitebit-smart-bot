@@ -1672,6 +1672,10 @@ async def monitor_orders():
 
                 # --- АВТОСТАРТ / FALLBACK / SCALП GRID ---
                 if cfg.get("autotrade"):
+                    # якщо після SL ми «тримали» монети — не стартуємо нові покупки, поки не буде ап-тренд
+                    if cfg.get("holdings_lock"):
+                        logging.info(f"[AUTOSTART HOLD] {market}: holdings_lock=True — чекаю ап-тренду.")
+                        continue
                     no_tracked = len(cfg.get("orders", [])) == 0
                     no_active = (len(active_ids) == 0)
                     if no_tracked and no_active:
