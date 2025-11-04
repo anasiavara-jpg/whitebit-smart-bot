@@ -67,6 +67,29 @@ def _normalize_market_cfg(cfg: dict) -> dict:
     cfg.setdefault("entry_price", None)
     cfg.setdefault("peak", None)
     cfg.setdefault("scalp_seeded_at", 0)  # ms, коли востаннє створили сітку
+        # --- режим керування профілем: manual | auto
+    cfg.setdefault("mode", "manual")  # за замовчуванням ручний режим
+
+    # --- авто-тренд: вікно та референс
+    cfg.setdefault("trend_window_s", 300)      # 5 хв для визначення напрямку
+    cfg.setdefault("trend_ref_price", None)
+    cfg.setdefault("trend_ref_ts", 0)
+
+    # --- пороги перемикання профілю (відносна зміна від ref, у %)
+    cfg.setdefault("auto_down_pct", -1.5)  # якщо ≤ цього — «падіння»
+    cfg.setdefault("auto_up_pct",    1.0)  # якщо ≥ цього — «ріст»
+
+    # --- профілі параметрів, які бот підставляє сам
+    # профіль для падіння
+    cfg.setdefault("profile_down", {
+        "tp": 0.45, "sl": 2.5, "rebuy_pct": 0.0,
+        "scalp": True, "tick_pct": 0.30, "levels": 3
+    })
+    # профіль для росту
+    cfg.setdefault("profile_up", {
+        "tp": 0.80, "sl": 1.2, "rebuy_pct": 0.5,
+        "scalp": True, "tick_pct": 0.25, "levels": 3
+    })
     return cfg
 
 def load_markets():
