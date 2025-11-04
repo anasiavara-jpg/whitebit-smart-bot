@@ -1464,33 +1464,48 @@ async def monitor_orders():
                         break
 
                 if finished_any:
-                    chat_id = cfg.get("chat_id")
+    chat_id = cfg.get("chat_id")
 
-                    # >>> НОВИЙ БЛОК: автостоп і фіксація прибутку
-    cfg["entry_price"] = None
-    cfg["peak"] = None
-    save_markets()
-
-    # якщо було автотрейд — відразу перевіряємо баланс і прибуток
-    balances_now = await get_balance()
-    base_symbol = base_symbol_from_market(market)
-    base_av = float((balances_now.get(base_symbol) or {}).get("available", 0))
-    if base_av > 0:
-        last_p = await get_last_price(market)
-        if last_p:
-            profit_usdt = base_av * last_p
-            await bot.send_message(chat_id, f"💰 {market}: прибуток за позицією ≈ {profit_usdt:.2f} USDT")
-
-    # якщо падіння — автостоп
+    # SAFETY: автостоп по локальному падінню від entry_price
     lp = await get_last_price(market)
-    if lp and cfg.get("entry_price"):
-        drop = (lp / float(cfg["entry_price"]) - 1) * 100
-        if drop < -3:  # >3% вниз — стоп
+    if lp:
+        # ініціалізація/оновлення референсів
+        if not cfg.get("entry_price"):
+            cfg["entry_price"] = float(lp)
+            cfg["peak"] = float(lp)
+        else:
+            if lp > float(cfg.get("peak") or 0):
+                cfg["peak"] = float(lp)
+
+        auto_dd = float(cfg.get("auto_dd_pct", 3.0))  # скільки % падіння від entry стопаємо
+        if auto_dd > 0 and (lp / float(cfg["entry_price"]) - 1.0) * 100.0 <= -auto_dd:
+            # скасувати всі ліміти
+            acts = await active_orders(market)
+            for o in acts.get("orders", []):
+                oid = o.get("orderId") or o.get("id")
+                if oid:
+                    await cancel_order(market, order_id=str(oid))
+            cfg["orders"].clear()
+            save_markets()
+
+            # продати ринком увесь BASE
             base_av = await get_base_available(market)
             if base_av > 0:
                 await place_market_order(market, "sell", float(base_av))
-                await bot.send_message(chat_id,
+                if chat_id:
+                    await bot.send_message(
+                        chat_id,
+                        f"🛑 {market}: AUTO-STOP {auto_dd}% — продано ринком."
+                    )
 
+            # скинути референси і перейти до наступної пари
+            cfg["entry_price"] = None
+            cfg["peak"] = None
+            save_markets()
+            continue
+
+    # (далі лишається твій існуючий код обробки — починаючи з коментаря
+    #  '# 🔧 Якщо скальп: НЕ чистимо всю сітку і НЕ скасовуємо інші ордери')
                     # 🔧 Якщо скальп: НЕ чистимо всю сітку і НЕ скасовуємо інші ордери
                     is_scalp = cfg.get("scalp") and str(finished_any.get("type", "")).startswith("scalp")
                     if is_scalp:
