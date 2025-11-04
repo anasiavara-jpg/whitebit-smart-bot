@@ -1466,6 +1466,31 @@ async def monitor_orders():
                 if finished_any:
                     chat_id = cfg.get("chat_id")
 
+                    # >>> НОВИЙ БЛОК: автостоп і фіксація прибутку
+    cfg["entry_price"] = None
+    cfg["peak"] = None
+    save_markets()
+
+    # якщо було автотрейд — відразу перевіряємо баланс і прибуток
+    balances_now = await get_balance()
+    base_symbol = base_symbol_from_market(market)
+    base_av = float((balances_now.get(base_symbol) or {}).get("available", 0))
+    if base_av > 0:
+        last_p = await get_last_price(market)
+        if last_p:
+            profit_usdt = base_av * last_p
+            await bot.send_message(chat_id, f"💰 {market}: прибуток за позицією ≈ {profit_usdt:.2f} USDT")
+
+    # якщо падіння — автостоп
+    lp = await get_last_price(market)
+    if lp and cfg.get("entry_price"):
+        drop = (lp / float(cfg["entry_price"]) - 1) * 100
+        if drop < -3:  # >3% вниз — стоп
+            base_av = await get_base_available(market)
+            if base_av > 0:
+                await place_market_order(market, "sell", float(base_av))
+                await bot.send_message(chat_id,
+
                     # 🔧 Якщо скальп: НЕ чистимо всю сітку і НЕ скасовуємо інші ордери
                     is_scalp = cfg.get("scalp") and str(finished_any.get("type", "")).startswith("scalp")
                     if is_scalp:
