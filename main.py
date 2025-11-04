@@ -643,17 +643,13 @@ async def market_cmd(message: types.Message):
             "chat_id": message.chat.id,
             "rebuy_pct": 0.0,
             "last_tp_price": None,
-
-            # ↓↓↓ нові поля для скальпу та SL-режимів ↓↓↓
             "scalp": False,
             "tick_pct": 0.25,
             "levels": 3,
             "maker_only": True,
-            "sl_mode": "trigger",   # "trigger" або "trailing"
+            "sl_mode": "trigger",
             "entry_price": None,
             "peak": None,
-
-            # ↓↓↓ AUTO-mode дефолти ↓↓↓
             "mode": "manual",
             "trend_window_s": 300,
             "trend_ref_price": None,
@@ -661,16 +657,10 @@ async def market_cmd(message: types.Message):
             "auto_down_pct": -1.5,
             "auto_up_pct": 1.0,
             "profile_down": {"tp": 0.45, "sl": 2.5, "rebuy_pct": 0.0, "scalp": True, "tick_pct": 0.30, "levels": 3},
-            "profile_up":   {"tp": 0.80, "sl": 1.2, "rebuy_pct": 0.5, "scalp": True, "tick_pct": 0.25, "levels": 3},
+            "profile_up": {"tp": 0.80, "sl": 1.2, "rebuy_pct": 0.5, "scalp": True, "tick_pct": 0.25, "levels": 3},
         }
 
         save_markets()
-        await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
-    except Exception:
-        await message.answer("⚠️ Використання: /market BTC/USDT")
-        await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
-    except Exception:
-        await message.answer("⚠️ Використання: /market BTC/USDT")
         await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
     except Exception:
         await message.answer("⚠️ Використання: /market BTC/USDT")
