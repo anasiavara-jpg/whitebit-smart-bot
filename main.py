@@ -671,6 +671,9 @@ async def market_cmd(message: types.Message):
         await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
     except Exception:
         await message.answer("⚠️ Використання: /market BTC/USDT")
+        await message.answer(f"✅ Додано ринок {market} (за замовчуванням 10 USDT)")
+    except Exception:
+        await message.answer("⚠️ Використання: /market BTC/USDT")
 
 @dp.message(Command("settp"))
 async def settp_cmd(message: types.Message):
