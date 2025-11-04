@@ -1453,7 +1453,7 @@ async def monitor_orders():
                                 elif "id" in o:
                                     oid = str(o["id"])
                             if oid is not None:
-                                active_ids.add(  
+                                active_ids.add(oid)
                 # визначаємо, який з треканих ордерів заповнився
                 finished_any = None
                 for entry in list(cfg.get("orders", [])):
