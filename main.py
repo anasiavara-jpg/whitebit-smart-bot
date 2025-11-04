@@ -708,6 +708,46 @@ async def help_cmd(message: types.Message):
         "/slmode BTC/USDT trigger|trailing — тип SL (ринковий тригер або трейлінг)"
     )
 
+@dp.message(Command("safemode"))
+async def cmd_safemode(msg: types.Message):
+    # /safemode on|off
+    try:
+        mode = msg.text.split()[1].lower()
+        safety.cfg.enabled = (mode == "on")
+        await msg.answer(f"Safe-mode: {'ON' if safety.cfg.enabled else 'OFF'}")
+    except Exception:
+        await msg.answer("Використання: /safemode on|off")
+
+@dp.message(Command("setautostop"))
+async def cmd_setautostop(msg: types.Message):
+    # /setautostop 3 — % денного ліміту втрат
+    try:
+        v = Decimal(msg.text.split()[1])
+        safety.cfg.daily_loss_pct = v
+        await msg.answer(f"Денний ліміт втрат: {v}%")
+    except Exception:
+        await msg.answer("Використання: /setautostop 3")
+
+@dp.message(Command("autopf"))
+async def cmd_autopf(msg: types.Message):
+    # /autopf on|off
+    try:
+        mode = msg.text.split()[1].lower()
+        safety.cfg.auto_profit_fix_enabled = (mode == "on")
+        await msg.answer(f"Auto-profit-fix: {'ON' if safety.cfg.auto_profit_fix_enabled else 'OFF'}")
+    except Exception:
+        await msg.answer("Використання: /autopf on|off")
+
+@dp.message(Command("setminpnl"))
+async def cmd_setminpnl(msg: types.Message):
+    # /setminpnl 0.8 — починати фіксацію з такого % руху
+    try:
+        v = Decimal(msg.text.split()[1])
+        safety.cfg.min_pnl_lock_pct = v
+        await msg.answer(f"Мін. рух для фіксації: {v}%")
+    except Exception:
+        await msg.answer("Використання: /setminpnl 0.8")
+
 @dp.message(Command("balance"))
 async def balance_cmd(message: types.Message):
     data = await get_balance()
