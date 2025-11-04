@@ -1163,6 +1163,7 @@ async def on_fill_pingpong(market: str, cfg: dict, filled: dict):
             cfg["orders"].append({"id": oid, "type": "scalp_buy", "market": market, "price": p_in, "amount": float(amt_in)})
     save_markets()
 
+
 async def start_new_trade(market: str, cfg: dict):
     # 1) Баланс до
     balances_before = await get_balance()
@@ -1188,6 +1189,23 @@ async def start_new_trade(market: str, cfg: dict):
     if not last_price or last_price <= 0:
         logging.error(f"Не вдалося отримати last_price для {market}.")
         return
+
+    # --- SAFETY ГЕЙТ ПЕРЕД ВХОДОМ (ВСТАВИТИ САМЕ ТУТ) ---
+    # Якщо останнє «вікно» тренду ще активне і падіння >= auto_down_pct — пропускаємо вхід
+    try:
+        ref_p = cfg.get("trend_ref_price")
+        ref_ts = int(cfg.get("trend_ref_ts") or 0)
+        window_ms = int(cfg.get("trend_window_s", 300)) * 1000
+        now = now_ms()
+        if ref_p and (now - ref_ts) < window_ms:
+            chg_pct = (float(last_price) / float(ref_p) - 1.0) * 100.0
+            down_thr = float(cfg.get("auto_down_pct", -1.5))
+            if chg_pct <= down_thr:
+                logging.info(f"[SAFETY] Skip entry {market}: drop {chg_pct:.2f}% ≤ {down_thr}% (window active)")
+                return
+    except Exception as e:
+        logging.warning(f"[SAFETY] check error for {market}: {e}")
+    # --- КІНЕЦЬ SAFETY ГЕЙТУ ---
 
     # 3) Маркет-купівля
     buy_res = await place_market_order(market, "buy", spend)
