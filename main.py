@@ -830,6 +830,7 @@ async def status_cmd(message: types.Message):
     if not markets:
         await message.answer("ℹ️ Активних ринків немає.")
         return
+
     text = "📊 <b>Статус</b>:\n"
     for m, cfg in markets.items():
         tp = f"{cfg['tp']}%" if cfg.get("tp") is not None else "—"
@@ -841,10 +842,12 @@ async def status_cmd(message: types.Message):
             f" Buy: {cfg['buy_usdt']} USDT\n"
             f" Автотрейд: {cfg['autotrade']}\n"
             f" Rebuy: {cfg.get('rebuy_pct', 0)}%\n"
+            f" Mode: {cfg.get('mode', 'manual')}\n"
+            f" Scalp: {cfg.get('scalp', False)} | Tick: {cfg.get('tick_pct', 0.25)}% | Levels: {cfg.get('levels', 3)}\n"
             f" Ордерів: {len(cfg.get('orders', []))}\n"
         )
-    await message.answer(text)
 
+    await message.answer(text)
 @dp.message(Command("orders"))
 async def orders_cmd(message: types.Message):
     try:
