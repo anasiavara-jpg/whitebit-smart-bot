@@ -1427,18 +1427,16 @@ async def monitor_orders():
                                 cfg["trend_ref_ts"] = now
                                 save_markets()
                             else:
-                                # відносна зміна за вікно
-                                chg_pct = (lp / float(ref_p) - 1.0) * 100.0
-                                down_thr = float(cfg.get("auto_down_pct", -1.5))
-                                up_thr   = float(cfg.get("auto_up_pct", 1.0))
+            # відносна зміна за вікно
+            chg_pct = (lp / float(ref_p) - 1.0) * 100.0
+            down_thr = float(cfg.get("auto_down_pct", -1.5))
+            up_thr   = float(cfg.get("auto_up_pct", 1.0))
 
-                                want = None
-                                if chg_pct <= down_thr:
-                                    want = "down"
-                                elif chg_pct >= up_thr:
-                                    want = "up"
-
-            
+            want = None
+            if chg_pct <= down_thr:
+                want = "down"
+            elif chg_pct >= up_thr:
+                want = "up"
 
             if want:
                 prof = cfg.get(f"profile_{want}") or {}
@@ -1454,7 +1452,10 @@ async def monitor_orders():
                 if ok and cfg.get("chat_id"):
                     await bot.send_message(
                         cfg["chat_id"],
-                        f"🟢 {market}: ап-тренд. Відновлено: виставлено TP від холдингів."
+                        f"🟢 {market}: ап-тренд. Виставлено TP від холдингів."
+                    )
+                cfg["holdings_lock"] = False
+                save_markets()
                     )
                 cfg["holdings_lock"] = False
                 save_markets()
