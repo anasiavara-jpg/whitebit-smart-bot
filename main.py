@@ -1445,16 +1445,19 @@ if cfg.get("mode") == "auto":
                         cfg[k] = prof[k]
                 save_markets()
                 
-            # 🟢 якщо монети були «заморожені» після SL — відновлюємо тільки на ап-тренді
-if want == "up" and cfg.get("holdings_lock"):
-    ok = await place_tp_sl_from_holdings(market, cfg)
-    if ok and cfg.get("chat_id"):
-        await bot.send_message(
-            cfg["chat_id"],
-            f"🟢 {market}: ап-тренд. Виставлено TP від холдингів."
-        )
-    cfg["holdings_lock"] = False
-    save_markets()
+# 🟢 якщо монети були «заморожені» після SL — відновлюємо тільки на ап-тренді
+if cfg.get("mode") == "auto":
+    # want визначається в блоці вище; якщо умова не виконалась, просто не розморожуємо
+    try:
+        want  # якщо змінної нема — викличе NameError і перескочимо
+        if want == "up" and cfg.get("holdings_lock"):
+            ok = await place_tp_sl_from_holdings(market, cfg)
+            if ok and cfg.get("chat_id"):
+                await bot.send_message(cfg["chat_id"], f"🟢 {market}: ап-тренд. Виставлено TP від холдингів.")
+            cfg["holdings_lock"] = False
+            save_markets()
+    except NameError:
+        pass
 
 # --- HARD/TRAILING SL ---
 try:
@@ -1488,8 +1491,8 @@ if sl_pct > 0:
                     await cancel_order(market, order_id=str(oid))
             cfg["orders"].clear()
             save_markets()
-            base_av = await get_base_available(market)
 
+            base_av = await get_base_available(market)
             if cfg.get("hold_on_sl"):
                 # ✅ Мʼякий SL: НЕ продаємо ринком, «заморожуємо» холдинг до ап-тренду
                 cfg["holdings_lock"] = True
@@ -1506,7 +1509,7 @@ if sl_pct > 0:
                     if cfg.get("chat_id"):
                         await bot.send_message(cfg["chat_id"], f"🛑 {market}: SL спрацював, продано ринком.")
 
-            # скидаємо референси і переходимо до наступної пари
+            # скинути референси і перейти до наступної пари
             cfg["entry_price"] = None
             cfg["peak"] = None
             save_markets()
