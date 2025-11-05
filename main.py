@@ -1438,19 +1438,13 @@ async def monitor_orders():
                                 elif chg_pct >= up_thr:
                                     want = "up"
 
-                                if want:
-                                    prof = cfg.get(f"profile_{want}") or {}
-                                    # підміна тільки якщо значення є
-                                    for k in ("tp", "sl", "rebuy_pct", "scalp", "tick_pct", "levels"):
-                                        if k in prof:
-                                            cfg[k] = prof[k]
-                                    save_markets()
-                                if want:
-                                    prof = cfg.get(f"profile_{want}") or {}
-                                    for k in ("tp", "sl", "rebuy_pct", "scalp", "tick_pct", "levels"):
-                                        if k in prof:
-                                            cfg[k] = prof[k]
-                                    save_markets()
+    if want:
+        prof = cfg.get(f"profile_{want}") or {}
+        # підміна тільки якщо значення є
+        for k in ("tp", "sl", "rebuy_pct", "scalp", "tick_pct", "levels"):
+            if k in prof:
+                cfg[k] = prof[k]
+        save_markets()
 
                                     # 🟢 якщо монети були «заморожені» після SL — відновлюємо тільки на ап-тренді
                                     if want == "up" and cfg.get("holdings_lock"):
