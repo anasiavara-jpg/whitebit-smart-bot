@@ -1456,11 +1456,7 @@ async def monitor_orders():
                     )
                 cfg["holdings_lock"] = False
                 save_markets()
-                    )
-                cfg["holdings_lock"] = False
-                save_markets()
-                except Exception as e:
-                    logging.warning(f"[AUTO MODE] {market} error: {e}")
+
                 # --- HARD/TRAILING SL ---
                 try:
                     sl_pct = float(cfg.get("sl") or 0)
