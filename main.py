@@ -1481,17 +1481,15 @@ async def monitor_orders():
                         elif mode == "trailing" and cfg.get("peak"):
                             threshold = float(cfg["peak"]) * (1 - sl_pct / 100)
 
-                                                if threshold and lp <= threshold:
+                        if threshold and lp <= threshold:
                             # скасовуємо всі ліміти
                             acts = await active_orders(market)
                             for o in acts.get("orders", []):
                                 oid = o.get("orderId") or o.get("id")
                                 if oid:
                                     await cancel_order(market, order_id=str(oid))
-
                             cfg["orders"].clear()
                             save_markets()
-
                             base_av = await get_base_available(market)
 
                             if cfg.get("hold_on_sl"):
