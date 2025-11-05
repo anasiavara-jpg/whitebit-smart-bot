@@ -1445,7 +1445,7 @@ async def monitor_orders():
                                         if k in prof:
                                             cfg[k] = prof[k]
                                     save_markets()
-                                                                    if want:
+                                if want:
                                     prof = cfg.get(f"profile_{want}") or {}
                                     for k in ("tp", "sl", "rebuy_pct", "scalp", "tick_pct", "levels"):
                                         if k in prof:
