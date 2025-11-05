@@ -1400,121 +1400,136 @@ async def restart_cmd(message: types.Message):
 # ---------------- MONITOR ----------------
 async def monitor_orders():
     """
-    Частий монітор: 2с.
+    Частий монітор: ~2с.
     Логіка:
-      - Trigger/Trailing SL: якщо ціна <= поріг — скасувати ліміти і продати ринком.
-      - Якщо ордер закрився: прибрати пару, зробити ребай після TP (опційно), або ping-pong для скальпу.
-      - Autostart: якщо пусто — спробувати старт від холдингів; якщо нема — купівля за USDT;
-        якщо увімкнено scalp — сформувати сітку.
+      - AUTO MODE: оновлення референсу, визначення тренду, підміна профілю.
+      - HOLD-on-SL: «розмороження» лише на ап-тренді.
+      - Trigger/Trailing SL: при тригері — скасувати ліміти, далі sell market або hold.
+      - Детект завершених ордерів: порівнюємо відстежувані vs активні.
+      - Autostart: якщо немає активних і відстежуваних — старт від холдингів або купівля; для scalp — посів сітки.
     """
     while True:
         try:
             for market, cfg in list(markets.items()):
-# --- AUTO MODE: визначення тренду і підміна профілю
-if cfg.get("mode") == "auto":
-    lp = await get_last_price(market)
-    if lp:
-        safety.note_price(market, Decimal(str(lp)), time.time())
-        now = now_ms()
-        ref_p = cfg.get("trend_ref_price")
-        ref_ts = int(cfg.get("trend_ref_ts") or 0)
-        window_ms = int(cfg.get("trend_window_s", 300)) * 1000
+                cfg = _normalize_market_cfg(cfg)  # захист від «дірявих» конфігів
 
-        # ініціалізація референсу
-        if not ref_p or (now - ref_ts) > window_ms:
-            cfg["trend_ref_price"] = float(lp)
-            cfg["trend_ref_ts"] = now
-            save_markets()
-        else:
-            # відносна зміна за вікно
-            chg_pct = (float(lp) / float(ref_p) - 1.0) * 100.0
-            down_thr = float(cfg.get("auto_down_pct", -1.5))
-            up_thr   = float(cfg.get("auto_up_pct", 1.0))
+                # --- AUTO MODE: визначення тренду і підміна профілю
+                if cfg.get("mode") == "auto":
+                    lp = await get_last_price(market)
+                    if lp:
+                        safety.note_price(market, Decimal(str(lp)), time.time())
+                        now = now_ms()
+                        ref_p = cfg.get("trend_ref_price")
+                        ref_ts = int(cfg.get("trend_ref_ts") or 0)
+                        window_ms = int(cfg.get("trend_window_s", 300)) * 1000
 
-            want = None
-            if chg_pct <= down_thr:
-                want = "down"
-            elif chg_pct >= up_thr:
-                want = "up"
+                        # ініціалізація референсу
+                        if not ref_p or (now - ref_ts) > window_ms:
+                            cfg["trend_ref_price"] = float(lp)
+                            cfg["trend_ref_ts"] = now
+                            save_markets()
+                            want = None
+                        else:
+                            # відносна зміна за вікно
+                            chg_pct = (float(lp) / float(ref_p) - 1.0) * 100.0
+                            down_thr = float(cfg.get("auto_down_pct", -1.5))
+                            up_thr   = float(cfg.get("auto_up_pct", 1.0))
 
-            if want:
-                prof = cfg.get(f"profile_{want}") or {}
-                # підміна тільки якщо значення є
-                for k in ("tp", "sl", "rebuy_pct", "scalp", "tick_pct", "levels"):
-                    if k in prof:
-                        cfg[k] = prof[k]
-                save_markets()
-                
-# 🟢 якщо монети були «заморожені» після SL — відновлюємо тільки на ап-тренді
-if cfg.get("mode") == "auto":
-    # want визначається в блоці вище; якщо умова не виконалась, просто не розморожуємо
-    try:
-        want  # якщо змінної нема — викличе NameError і перескочимо
-        if want == "up" and cfg.get("holdings_lock"):
-            ok = await place_tp_sl_from_holdings(market, cfg)
-            if ok and cfg.get("chat_id"):
-                await bot.send_message(cfg["chat_id"], f"🟢 {market}: ап-тренд. Виставлено TP від холдингів.")
-            cfg["holdings_lock"] = False
-            save_markets()
-    except NameError:
-        pass
+                            want = None
+                            if chg_pct <= down_thr:
+                                want = "down"
+                            elif chg_pct >= up_thr:
+                                want = "up"
 
-# --- HARD/TRAILING SL ---
-try:
-    sl_pct = float(cfg.get("sl") or 0)
-except Exception:
-    sl_pct = 0.0
+                            if want:
+                                prof = cfg.get(f"profile_{want}") or {}
+                                for k in ("tp", "sl", "rebuy_pct", "scalp", "tick_pct", "levels"):
+                                    if k in prof:
+                                        cfg[k] = prof[k]
+                                save_markets()
+                    else:
+                        want = None
+                else:
+                    want = None  # у manual режимі не перемикаємо профілі
 
-if sl_pct > 0:
-    lp = await get_last_price(market)
-    if lp:
-        mode = (cfg.get("sl_mode") or "trigger").lower()
+                # 🟢 якщо монети були «заморожені» після SL — відновлюємо тільки на ап-тренді
+                if cfg.get("mode") == "auto":
+                    if want == "up" and cfg.get("holdings_lock"):
+                        ok = await place_tp_sl_from_holdings(market, cfg)
+                        if ok and cfg.get("chat_id"):
+                            await bot.send_message(cfg["chat_id"], f"🟢 {market}: ап-тренд. Виставлено TP від холдингів.")
+                        cfg["holdings_lock"] = False
+                        save_markets()
 
-        if mode == "trailing":
-            peak = float(cfg.get("peak") or 0)
-            if lp > (peak or 0):
-                cfg["peak"] = lp
-                save_markets()
+                # --- HARD/TRAILING SL ---
+                try:
+                    sl_pct = float(cfg.get("sl") or 0)
+                except Exception:
+                    sl_pct = 0.0
 
-        threshold = None
-        if mode == "trigger" and cfg.get("entry_price"):
-            threshold = float(cfg["entry_price"]) * (1 - sl_pct / 100)
-        elif mode == "trailing" and cfg.get("peak"):
-            threshold = float(cfg["peak"]) * (1 - sl_pct / 100)
+                if sl_pct > 0:
+                    lp = await get_last_price(market)
+                    if lp:
+                        mode = (cfg.get("sl_mode") or "trigger").lower()
 
-        if threshold and lp <= threshold:
-            # скасовуємо всі ліміти
-            acts = await active_orders(market)
-            for o in acts.get("orders", []):
-                oid = o.get("orderId") or o.get("id")
-                if oid:
-                    await cancel_order(market, order_id=str(oid))
-            cfg["orders"].clear()
-            save_markets()
+                        if mode == "trailing":
+                            peak = float(cfg.get("peak") or 0)
+                            if lp > (peak or 0):
+                                cfg["peak"] = lp
+                                save_markets()
 
-            base_av = await get_base_available(market)
-            if cfg.get("hold_on_sl"):
-                # ✅ Мʼякий SL: НЕ продаємо ринком, «заморожуємо» холдинг до ап-тренду
-                cfg["holdings_lock"] = True
-                save_markets()
-                if cfg.get("chat_id"):
-                    await bot.send_message(
-                        cfg["chat_id"],
-                        f"🟡 {market}: SL-тригер. Монети залишено (hold_on_sl=ON). Чекаю ап-тренду."
-                    )
-            else:
-                # звичайна поведінка: продати ринком усе
-                if base_av > 0:
-                    await place_market_order(market, "sell", float(base_av))
-                    if cfg.get("chat_id"):
-                        await bot.send_message(cfg["chat_id"], f"🛑 {market}: SL спрацював, продано ринком.")
+                        threshold = None
+                        if mode == "trigger" and cfg.get("entry_price"):
+                            threshold = float(cfg["entry_price"]) * (1 - sl_pct / 100)
+                        elif mode == "trailing" and cfg.get("peak"):
+                            threshold = float(cfg["peak"]) * (1 - sl_pct / 100)
 
-            # скинути референси і перейти до наступної пари
-            cfg["entry_price"] = None
-            cfg["peak"] = None
-            save_markets()
-            continue  # до наступної пари
+                        if threshold and lp <= threshold:
+                            # скасовуємо всі ліміти
+                            acts = await active_orders(market)
+                            for o in acts.get("orders", []):
+                                oid = o.get("orderId") or o.get("id")
+                                if oid:
+                                    await cancel_order(market, order_id=str(oid))
+                            cfg["orders"].clear()
+                            save_markets()
 
+                            base_av = await get_base_available(market)
+                            if cfg.get("hold_on_sl"):
+                                # ✅ Мʼякий SL: НЕ продаємо ринком, «заморожуємо» холдинг до ап-тренду
+                                cfg["holdings_lock"] = True
+                                save_markets()
+                                if cfg.get("chat_id"):
+                                    await bot.send_message(
+                                        cfg["chat_id"],
+                                        f"🟡 {market}: SL-тригер. Монети залишено (hold_on_sl=ON). Чекаю ап-тренду."
+                                    )
+                            else:
+                                # звичайна поведінка: продати ринком усе
+                                if base_av > 0:
+                                    await place_market_order(market, "sell", float(base_av))
+                                    if cfg.get("chat_id"):
+                                        await bot.send_message(cfg["chat_id"], f"🛑 {market}: SL спрацював, продано ринком.")
+
+                            # скинути референси і перейти до наступної пари
+                            cfg["entry_price"] = None
+                            cfg["peak"] = None
+                            save_markets()
+                            continue  # до наступної пари
+
+                # --- ДЕТЕКТ ЗАКРИТИХ ОРДЕРІВ (порівняння відстежуваних з активними) ---
+                acts = await active_orders(market)
+                active_ids = {
+                    str(o.get("orderId") or o.get("id"))
+                    for o in acts.get("orders", []) if isinstance(o, dict)
+                }
+                tracked = list(cfg.get("orders", []))
+                tracked_ids = {str(e.get("id")) for e in tracked if isinstance(e, dict) and e.get("id")}
+                finished = [e for e in tracked if str(e.get("id")) not in active_ids]
+                finished_any = finished[0] if finished else None
+                chat_id = cfg.get("chat_id")
+
+                if finished_any:
                     # 🔧 Якщо скальп: НЕ чистимо всю сітку і НЕ скасовуємо інші ордери
                     is_scalp = cfg.get("scalp") and str(finished_any.get("type", "")).startswith("scalp")
                     if is_scalp:
@@ -1531,7 +1546,8 @@ if sl_pct > 0:
                         save_markets()
                         # запускаємо ping-pong тільки для цього ордера
                         await on_fill_pingpong(market, cfg, finished_any)
-                        continue  # не запускаємо автотрейд нижче
+                        # ідемо далі — без автотрейду нижче
+                        continue
 
                     # 🧹 Звичайна логіка (НЕ скальп)
                     if chat_id:
@@ -1542,8 +1558,8 @@ if sl_pct > 0:
 
                     # скасувати інші ордери з цієї пари
                     for entry in list(cfg.get("orders", [])):
-                        if str(entry["id"]) != str(finished_any["id"]):
-                            await cancel_order(market, order_id=str(entry["id"]))
+                        if str(entry.get("id")) != str(finished_any.get("id")):
+                            await cancel_order(market, order_id=str(entry.get("id")))
                             await asyncio.sleep(0.1)
 
                     cfg["orders"].clear()
@@ -1591,6 +1607,7 @@ if sl_pct > 0:
                     if cfg.get("holdings_lock"):
                         logging.info(f"[AUTOSTART HOLD] {market}: holdings_lock=True — чекаю ап-тренду.")
                         continue
+
                     no_tracked = len(cfg.get("orders", [])) == 0
                     no_active = (len(active_ids) == 0)
                     if no_tracked and no_active:
@@ -1633,8 +1650,7 @@ if sl_pct > 0:
         except Exception as e:
             logging.error(f"Monitor error: {e}")
 
-        await asyncio.sleep(2)  # було 10
-
+        await asyncio.sleep(2)
 # ---------------- RUN ----------------
 async def main():
     load_markets()
