@@ -1412,21 +1412,21 @@ async def monitor_orders():
             for market, cfg in list(markets.items()):
               # --- AUTO MODE: визначення тренду і підміна профілю
                 try:
-                    if (cfg.get("mode") == "auto"):
-                        lp = await get_last_price(market)
-                        safety.note_price(market, Decimal(str(lp)), time.time())
-                        if lp:
-                            now = now_ms()
-                            ref_p = cfg.get("trend_ref_price")
-                            ref_ts = int(cfg.get("trend_ref_ts") or 0)
-                            window_ms = int(cfg.get("trend_window_s", 300)) * 1000
+if (cfg.get("mode") == "auto"):
+    lp = await get_last_price(market)
+    safety.note_price(market, Decimal(str(lp)), time.time())
+    if lp:
+        now = now_ms()
+        ref_p = cfg.get("trend_ref_price")
+        ref_ts = int(cfg.get("trend_ref_ts") or 0)
+        window_ms = int(cfg.get("trend_window_s", 300)) * 1000
 
-                            # ініціалізація референсу
-                            if not ref_p or (now - ref_ts > window_ms):
-                                cfg["trend_ref_price"] = float(lp)
-                                cfg["trend_ref_ts"] = now
-                                save_markets()
-                            else:
+        # ініціалізація референсу
+        if not ref_p or (now - ref_ts > window_ms):
+            cfg["trend_ref_price"] = float(lp)
+            cfg["trend_ref_ts"] = now
+            save_markets()
+        else:
             # відносна зміна за вікно
             chg_pct = (lp / float(ref_p) - 1.0) * 100.0
             down_thr = float(cfg.get("auto_down_pct", -1.5))
@@ -1445,7 +1445,7 @@ async def monitor_orders():
                     if k in prof:
                         cfg[k] = prof[k]
                 save_markets()
-
+                
             # 🟢 якщо монети були «заморожені» після SL — відновлюємо тільки на ап-тренді
 if want == "up" and cfg.get("holdings_lock"):
     ok = await place_tp_sl_from_holdings(market, cfg)
