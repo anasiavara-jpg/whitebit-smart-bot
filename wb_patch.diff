@@ -309,5 +309,7 @@
 +                                        await bot.send_message(chat_id, f"🏦 {market}: авто-вивід {pay} USDT у MAIN виконано.")
 +                                    elif not ok:
 +                                        logging.warning(f"[PAYOUT] transfer failed: {res}")
+-                    except Exception as e:
+-                        logging.warning(f"[PAYOUT] error: {e}")e}")
 +                    except Exception as e:
-+                        logging.warning(f"[PAYOUT] error: {e}")e}")
++                        logging.warning(f"[PAYOUT] error: {e}")
