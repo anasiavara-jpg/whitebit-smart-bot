@@ -1,5 +1,5 @@
---- a/main.py
-+++ b/main.py
+--- main.py
++++ main.py
 @@
  def _normalize_market_cfg(cfg: dict) -> dict:
 @@
@@ -25,6 +25,75 @@
 +    return await private_post("/api/v4/main-account/transfer", body)
 +
 @@
+ async def private_post(path: str, extra_body: Optional[dict] = None) -> dict:
+     body_bytes, headers = _payload_and_headers(path, extra_body)
+     url = BASE_URL + path
+     for attempt in range(3):
+         try:
+             async with httpx.AsyncClient(timeout=30) as client:
+-                r = await client.post(url, headers=headers, content=body_bytes)
++                r = await client.post(url, headers=headers, content=body_bytes)
++            # 👇 ДОДАНО: детальний лог відповіді (422, текст причини тощо)
++            try:
++                logging.info(f"[WB] {r.request.method} {url} -> {r.status_code} {r.text}")
++            except Exception:
++                pass
+             if r.status_code == 429:
+                 await asyncio.sleep(0.5 + 0.5 * attempt)
+                 continue
+             if r.status_code >= 500:
+                 logging.warning(f"[private_post] {r.status_code} {url}")
+@@
+     return {"error": "private_post retries exceeded"}
+@@
+ def next_nonce() -> int:
+@@
+     return _nonce
++
++# ---- NEW: уніфікована нормалізація маркета (для зручності в хендлерах)
++def _norm_market_name(s: str) -> str:
++    return s.strip().upper().replace("-", "_").replace("/", "_")
+@@
+ async def place_limit_order(
+@@
+     return await private_post("/api/v4/order/new", body)
+@@
+ async def _place_maker_limit(market, side, price, amount, tag):
+-    oid = _extract_order_id(
+-        await place_limit_order(market, side, price, amount, client_order_id=tag, post_only=True)
+-    )
+-    return oid
++    """
++    ОНОВЛЕНО: враховує maker_only з cfg та робить ретрай без postOnly,
++    якщо біржа відхилила post-only ліміт (класична 422 'would be filled immediately').
++    """
++    # спробуємо дістати cfg з глобального markets, якщо є
++    cfg = markets.get(market, {}) if isinstance(markets.get(market), dict) else {}
++    post_only = bool(cfg.get("maker_only", True))
++
++    # 1-а спроба
++    res = await place_limit_order(
++        market, side, price, amount,
++        client_order_id=tag, post_only=post_only
++    )
++    oid = _extract_order_id(res)
++    if oid:
++        return oid
++
++    # Якщо помилка у dict — дивимось повідомлення
++    if isinstance(res, dict):
++        msg = (res.get("message") or "").lower()
++        if (("post" in msg and "only" in msg) or ("would be filled" in msg)) and post_only:
++            logging.warning(f"[SCALP] {market} {side}: postOnly reject → ретрай без postOnly")
++            res2 = await place_limit_order(
++                market, side, price, amount,
++                client_order_id=tag, post_only=False
++            )
++            oid2 = _extract_order_id(res2)
++            if oid2:
++                return oid2
++    return None
+@@
      if cfg.get("tp"):
          tp_price = float(quantize_price(market, last_price * (1 + float(cfg["tp"]) / 100)))
          cfg["last_tp_price"] = tp_price
@@ -40,13 +109,7 @@
 +                "id": oid, "cid": cid, "type": "tp", "market": market,
 +                "price": tp_price, "amount": float(base_amount)
 +            })
- 
-     save_markets()
 @@
-     if can_place_tp:
-         cid = f"wb-{market}-tp-{ts}"
-         tp_order = await place_limit_order(market, "sell", tp_price, float(safe_amount), client_order_id=cid)
-         oid = _extract_order_id(tp_order)
 -        if oid:
 -            cfg["orders"].append({"id": oid, "cid": cid, "type": "tp", "market": market})
 +        if oid:
@@ -54,6 +117,73 @@
 +                "id": oid, "cid": cid, "type": "tp", "market": market,
 +                "price": tp_price, "amount": float(safe_amount)
 +            })
+@@
+ async def seed_scalp_grid(market: str, cfg: dict, ref_price: float):
+@@
+-        oid = await _place_maker_limit(market, "buy", p, float(amt), tag)
++        oid = await _place_maker_limit(market, "buy", p, float(amt), tag)
+@@
+-                oid = await _place_maker_limit(market, "sell", p, float(portion), tag)
++                oid = await _place_maker_limit(market, "sell", p, float(portion), tag)
+                 if oid:
+                     cfg["orders"].append({"id": oid, "type": "scalp_sell", "market": market, "price": p, "amount": float(portion)})
+@@
+     if typ == "scalp_buy":
+         cfg["entry_price"] = price
+         p_out = float(quantize_price(market, price * (1 + tick / 100)))
+         tag = f"wb-{market}-pp-sell-{now_ms()}"
+-        oid = await _place_maker_limit(market, "sell", p_out, amt, tag)
++        oid = await _place_maker_limit(market, "sell", p_out, amt, tag)
+@@
+-        oid = await _place_maker_limit(market, "buy", p_in, float(amt_in), tag)
++        oid = await _place_maker_limit(market, "buy", p_in, float(amt_in), tag)
+@@
+ @dp.message(Command("buy"))
+ async def buy_cmd(message: types.Message):
+     try:
+-        _, market = message.text.split()
+-        market = market.upper().replace("/", "_")
++        _, market = message.text.split()
++        market = _norm_market_name(market)
+         if market not in markets:
+             await message.answer("❌ Спочатку додай ринок через /market.")
+             return
+         await start_new_trade(market, markets[market])
+         await message.answer(f"✅ Купівля {market} виконана на {markets[market]['buy_usdt']} USDT.")
+     except Exception:
+         await message.answer("⚠️ Використання: /buy BTC/USDT")
++
++# ---- NEW: швидкий старт торгівлі по ринку
++@dp.message(Command("start_trade"))
++async def cmd_start_trade(message: types.Message):
++    parts = message.text.split()
++    if len(parts) < 2:
++        return await message.answer("⚠️ Використання: /start_trade BTC/USDT")
++    market = _norm_market_name(parts[1])
++    if market not in markets:
++        return await message.answer("❌ Спочатку додай ринок через /market.")
++    ok = await start_new_trade(market, markets[market])
++    await message.answer("🟢 Запущено" if ok is None or ok else "⚠️ Не вдалося (баланс/правила).")
++
++# ---- NEW: масове скасування ордерів по всіх ринках
++@dp.message(Command("cancel_all"))
++async def cmd_cancel_all(message: types.Message):
++    total = 0
++    for m in list(markets.keys()):
++        if m == "_global":
++            continue
++        try:
++            data = await active_orders(m)
++            orders = data.get("orders", []) if isinstance(data, dict) else []
++            for o in orders:
++                oid = o.get("orderId") or o.get("id")
++                if oid:
++                    await cancel_order(m, order_id=str(oid))
++                    total += 1
++                    await asyncio.sleep(0.15)
++        except Exception as e:
++            logging.error(f"[cancel_all] {m}: {e}")
++    await message.answer(f"🧹 Скасовано загалом {total} ордер(ів)")
 @@
  async def monitor_orders():
 @@
@@ -129,21 +259,6 @@
 -                            cfg["peak"] = None
 -                            save_markets()
 -                            continue  # до наступної пари
--
--                            cfg["orders"].clear()
--                            save_markets()
--
--                            # продаємо ринком усе, що є в BASE
--                            base_av = await get_base_available(market)
--                            if base_av > 0:
--                                await place_market_order(market, "sell", float(base_av))
--                                if cfg.get("chat_id"):
--                                    await bot.send_message(cfg["chat_id"], f"🛑 {market}: SL спрацював, продано ринком.")
--
--                            cfg["entry_price"] = None
--                            cfg["peak"] = None
--                            save_markets()
--                            continue  # до наступного ринку
 +                            base_av = await get_base_available(market)
 +                            if cfg.get("hold_on_sl"):
 +                                # ✅ Мʼякий SL: НЕ продаємо ринком, «заморожуємо» холдинг до ап-тренду
@@ -195,4 +310,4 @@
 +                                    elif not ok:
 +                                        logging.warning(f"[PAYOUT] transfer failed: {res}")
 +                    except Exception as e:
-+                        logging.warning(f"[PAYOUT] error: {e}")
++                        logging.warning(f"[PAYOUT] error: {e}")e}")
