@@ -91,7 +91,7 @@
   },
   "ETH_USDT": {
     "tp": 1.6, "sl": 3.0, "rebuy_pct": 0.4,
-    "autotrade": true, "buy_usdt": 15,
+    "autotrade": true, "buy_usdt": 8,
     "scalp": true, "tick_pct": 0.25, "levels": 2,
     "maker_only": true, "sl_mode": "trigger",
     "mode": "auto", "auto_dd_pct": 3.0,
